@@ -17,8 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-from batcher import MessageBatcher
-from router import route, route_command, MODEL_MAP
+from router import route
 from session import SessionManager
 
 logging.basicConfig(
@@ -43,17 +42,10 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
 
 ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
-MODEL_CONFIG = CONFIG.get("models", {})
-
-# Override MODEL_MAP with config
-for intent, model in MODEL_CONFIG.items():
-    MODEL_MAP[intent] = model
 
 # Session manager
 sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
 
-# Message batcher — wait for user to finish typing
-batcher = MessageBatcher(delay_seconds=5.0, max_wait_seconds=30.0)
 
 
 def _get_journal_path() -> str:
@@ -85,7 +77,7 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
 
     cmd = [claude_bin, "-p", "--model", model]
     if resume:
-        cmd.extend(["--session-id", session_id, "--resume"])
+        cmd.extend(["--resume", session_id])
     else:
         cmd.extend(["--session-id", session_id])
 
@@ -127,8 +119,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "🤖 AI 助手已就緒\n\n"
-        "直接打字跟我對話，我會自動判斷意圖。\n"
-        "或使用指令：/course /note /done"
+        "直接打字就能對話（預設 Sonnet）\n\n"
+        "切換模式：\n"
+        "/course — 課程學習（Opus）\n"
+        "/opus — 切換到 Opus（深度思考）\n"
+        "/sonnet — 切回 Sonnet\n"
+        "/done — 結束並儲存\n"
+        "/restart — 重啟 Bot"
     )
 
 
@@ -172,15 +169,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
-    # Batch messages — wait for user to finish typing
-    merged = await batcher.add(user_id, text)
-    if merged is None:
-        return  # Still waiting for more messages
-
-    logger.info(f"Batched message ({merged.count(chr(10))+1} parts): {merged[:80]}...")
-
-    # Route based on merged text
-    model, intent = await route(merged, MODEL_CONFIG)
+    logger.info(f"Message: {text[:80]}...")
+    model, intent = route(text)
     logger.info(f"Routed to model={model}, intent={intent}")
 
     # Handle end intent with confirmation
@@ -200,15 +190,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = sessions.get_or_create(user_id, intent, model)
     resume = not session.is_first_message
 
-    # Update model if intent changed
-    if intent in ("course", "architecture", "decision"):
-        session.model = MODEL_CONFIG.get(intent, "opus")
-        session.intent = intent
-        model = session.model
+    # Update session model when user explicitly switches
+    session.model = model
+    session.intent = intent
 
-    await update.message.chat.send_action("typing")
+    # Progress feedback — send status then keep typing indicator
+    INTENT_LABEL = {
+        "course": "📚 課程模式",
+        "architecture": "🏗️ 架構思考",
+        "decision": "⚖️ 決策分析",
+        "note": "📝 筆記模式",
+        "chat": "💬 對話",
+    }
+    status_msg = await update.message.reply_text(
+        f"{INTENT_LABEL.get(intent, '💬')} | {model} | 思考中..."
+    )
+
+    # Keep sending typing action while Claude thinks
+    async def keep_typing():
+        try:
+            while True:
+                await update.message.chat.send_action("typing")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+
+    typing_task = asyncio.create_task(keep_typing())
 
     result = await _run_claude(text, model, session.session_id, resume=resume)
+
+    typing_task.cancel()
+
+    # Delete status message, send actual response
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
     session.touch()
 
     # Split long messages (Telegram limit: 4096 chars)
@@ -223,8 +240,9 @@ async def post_init(app: Application):
     """Set bot commands menu."""
     commands = [
         BotCommand("start", "啟動助手"),
-        BotCommand("course", "進入課程學習模式"),
-        BotCommand("note", "快速記筆記"),
+        BotCommand("course", "課程學習（Opus）"),
+        BotCommand("opus", "切換 Opus（深度思考）"),
+        BotCommand("sonnet", "切換 Sonnet（日常）"),
         BotCommand("done", "結束對話並儲存"),
         BotCommand("restart", "重啟 Bot"),
     ]
