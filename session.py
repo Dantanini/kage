@@ -36,7 +36,7 @@ class SessionManager:
 
     def create(self, user_id: int, intent: str, model: str) -> Session:
         session = Session(
-            session_id=str(uuid.uuid4())[:8],
+            session_id=str(uuid.uuid4()),
             user_id=user_id,
             intent=intent,
             model=model,

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shutil
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -16,6 +17,7 @@ from telegram.ext import (
     filters,
 )
 
+from batcher import MessageBatcher
 from router import route, route_command, MODEL_MAP
 from session import SessionManager
 
@@ -24,6 +26,15 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Load .env file early (before any env var reads)
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _key, _val = _line.split("=", 1)
+            os.environ.setdefault(_key.strip(), _val.strip())
 
 # Load config
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
@@ -40,6 +51,9 @@ for intent, model in MODEL_CONFIG.items():
 
 # Session manager
 sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
+
+# Message batcher — wait for user to finish typing
+batcher = MessageBatcher(delay_seconds=5.0, max_wait_seconds=30.0)
 
 
 def _get_journal_path() -> str:
@@ -74,6 +88,11 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
         cmd.extend(["--session-id", session_id, "--resume"])
     else:
         cmd.extend(["--session-id", session_id])
+
+    # Prepend date context on first message of session
+    if not resume:
+        prompt = f"[系統] 今天是 {date.today().isoformat()}。\n\n{prompt}"
+
     cmd.append(prompt)
 
     proc = await asyncio.create_subprocess_exec(
@@ -94,7 +113,10 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
 
 async def _check_auth(update: Update) -> bool:
     """Only allow admin for now."""
-    if update.effective_user.id != ADMIN_ID:
+    user = update.effective_user
+    logger.info(f"Message from user {user.id} ({user.full_name}), ADMIN_ID={ADMIN_ID}")
+    if user.id != ADMIN_ID:
+        logger.warning(f"Unauthorized: {user.id} != {ADMIN_ID}")
         await update.message.reply_text("⛔ 未授權的使用者")
         return False
     return True
@@ -131,6 +153,15 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ 對話已結束")
 
 
+async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _check_auth(update):
+        return
+    await update.message.reply_text("🔄 3 秒後重啟...")
+    await asyncio.sleep(3)
+    # systemd Restart=always will auto-restart
+    os._exit(0)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -141,8 +172,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
-    # Route to model + intent
-    model, intent = await route(text, MODEL_CONFIG)
+    # Batch messages — wait for user to finish typing
+    merged = await batcher.add(user_id, text)
+    if merged is None:
+        return  # Still waiting for more messages
+
+    logger.info(f"Batched message ({merged.count(chr(10))+1} parts): {merged[:80]}...")
+
+    # Route based on merged text
+    model, intent = await route(merged, MODEL_CONFIG)
+    logger.info(f"Routed to model={model}, intent={intent}")
 
     # Handle end intent with confirmation
     if intent == "end":
@@ -161,7 +200,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = sessions.get_or_create(user_id, intent, model)
     resume = not session.is_first_message
 
-    # Update model if intent changed (e.g., started chatting, now doing course)
+    # Update model if intent changed
     if intent in ("course", "architecture", "decision"):
         session.model = MODEL_CONFIG.get(intent, "opus")
         session.intent = intent
@@ -187,23 +226,13 @@ async def post_init(app: Application):
         BotCommand("course", "進入課程學習模式"),
         BotCommand("note", "快速記筆記"),
         BotCommand("done", "結束對話並儲存"),
+        BotCommand("restart", "重啟 Bot"),
     ]
     await app.bot.set_my_commands(commands)
 
 
 def main():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        # Try .env file
-        env_path = Path(__file__).resolve().parent / ".env"
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, val = line.split("=", 1)
-                    os.environ[key.strip()] = val.strip()
-            token = os.environ.get("TELEGRAM_BOT_TOKEN")
-
     if not token:
         logger.error("TELEGRAM_BOT_TOKEN not set")
         raise SystemExit(1)
@@ -218,6 +247,7 @@ def main():
     app = Application.builder().token(token).post_init(post_init).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
+    app.add_handler(CommandHandler("restart", cmd_restart))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(drop_pending_updates=True)
