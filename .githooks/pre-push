@@ -1,0 +1,26 @@
+#!/bin/sh
+# Block force push to protected branches
+
+PROTECTED_BRANCHES="main master"
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+# Detect force push: if remote ref is being overwritten (not fast-forward)
+while read local_ref local_sha remote_ref remote_sha; do
+    for branch in $PROTECTED_BRANCHES; do
+        if echo "$remote_ref" | grep -q "refs/heads/$branch"; then
+            # Check if this is a force push (non-fast-forward)
+            if [ "$remote_sha" != "0000000000000000000000000000000000000000" ]; then
+                MERGE_BASE=$(git merge-base "$local_sha" "$remote_sha" 2>/dev/null)
+                if [ "$MERGE_BASE" != "$remote_sha" ]; then
+                    echo "❌ Force push to '$branch' blocked!"
+                    echo "   This is a non-fast-forward push that would rewrite history."
+                    echo "   If you really need this, temporarily disable with:"
+                    echo "   git push --no-verify --force origin $branch"
+                    exit 1
+                fi
+            fi
+        fi
+    done
+done
+
+exit 0
