@@ -1,0 +1,30 @@
+# TG Bot 設定
+telegram:
+  # bot token 從環境變數 TELEGRAM_BOT_TOKEN 讀取
+  # admin_id 從環境變數 TELEGRAM_ADMIN_ID 讀取
+
+# claude -p 的 model 對應
+models:
+  course: "opus"
+  architecture: "opus"
+  decision: "opus"
+  note: "sonnet"
+  commit: "sonnet"
+  summary: "sonnet"
+  done: "sonnet"
+  chat: "sonnet"
+  default: "sonnet"
+
+# Haiku 做意圖分類
+classifier:
+  model: "haiku"
+
+# 工作目錄對應（未來擴展用）
+repos:
+  dev-journal:
+    path: ""  # 從環境變數 DEV_JOURNAL_PATH 讀取，或預設 ~/dev-journal
+    description: "個人知識庫和成長日誌"
+
+# Session 設定
+session:
+  timeout_minutes: 30

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Pre-commit hook: multi-layer secret protection
+
+# === Layer 1: Check for forbidden files ===
+FORBIDDEN_FILES=".env credentials.json service-account.json *.pem *.key"
+for pattern in $FORBIDDEN_FILES; do
+    MATCHES=$(git diff --cached --name-only | grep -E "^${pattern}$" || true)
+    if [ -n "$MATCHES" ]; then
+        echo "❌ Forbidden file staged: $MATCHES"
+        echo "   These files should never be committed."
+        exit 1
+    fi
+done
+
+# === Layer 2: Check for hardcoded patterns ===
+# Scan staged content for common secret patterns
+PATTERNS="TELEGRAM_BOT_TOKEN=.[^{]\|api[_-]?key\s*=\s*['\"][a-zA-Z0-9]\|password\s*=\s*['\"][^'\"]\|-----BEGIN\|ghp_\|github_pat_\|sk-[a-zA-Z0-9]"
+STAGED_CONTENT=$(git diff --cached --diff-filter=d -U0 | grep "^+" | grep -v "^+++" || true)
+FOUND=$(echo "$STAGED_CONTENT" | grep -iE "$PATTERNS" || true)
+if [ -n "$FOUND" ]; then
+    echo "❌ Possible secret detected in staged changes:"
+    echo "$FOUND"
+    echo ""
+    echo "   If this is a false positive, add the fingerprint to .gitleaksignore"
+    exit 1
+fi
+
+# === Layer 3: gitleaks deep scan ===
+GITLEAKS=$(command -v gitleaks 2>/dev/null || echo "$HOME/.local/bin/gitleaks")
+
+if [ -x "$GITLEAKS" ]; then
+    $GITLEAKS git --staged --no-banner
+    if [ $? -ne 0 ]; then
+        echo "❌ gitleaks found secrets! Commit blocked."
+        echo "   Run: gitleaks git --staged --verbose  to see details"
+        exit 1
+    fi
+else
+    echo "⚠️  gitleaks not found, skipping deep scan (layers 1-2 still active)"
+fi
+
+echo "✅ Secret scan passed (3 layers)"
+exit 0
