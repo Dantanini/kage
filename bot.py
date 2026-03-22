@@ -104,12 +104,10 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
 
 
 async def _check_auth(update: Update) -> bool:
-    """Only allow admin for now."""
+    """Only allow admin. Silent ignore for others — don't reveal bot is alive."""
     user = update.effective_user
-    logger.info(f"Message from user {user.id} ({user.full_name}), ADMIN_ID={ADMIN_ID}")
     if user.id != ADMIN_ID:
-        logger.warning(f"Unauthorized: {user.id} != {ADMIN_ID}")
-        await update.message.reply_text("⛔ 未授權的使用者")
+        logger.warning(f"Unauthorized: {user.id} ({user.full_name})")
         return False
     return True
 
