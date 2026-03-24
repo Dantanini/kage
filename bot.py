@@ -153,8 +153,73 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
-    # systemd Restart=always will auto-restart
     os._exit(0)
+
+
+MORNING_PROMPT = """[系統] 今天是 {date}。這是早上摘要。
+
+請執行以下步驟：
+1. 讀 profile/current-focus.md 了解目前三條主線
+2. 讀最近 3 天的 daily/*.md 了解近期進度
+3. 讀 learning/INDEX.md 了解學習進度
+4. 讀 decisions/INDEX.md 了解近期決策
+
+然後給 Dante 一份簡短的今日建議：
+- 今天最重要的 1-2 件事（根據主線優先順序）
+- 學習可以從哪裡繼續
+- 有沒有什麼卡住的需要處理"""
+
+EVENING_PROMPT = """[系統] 今天是 {date}。這是晚上日結。
+
+請執行以下步驟：
+1. 讀今天的 daily/{date}.md（如果存在）
+2. 讀 learning/INDEX.md 確認今天有沒有學習進度
+3. 讀 inbox/raw-notes.md 看有沒有今天的零散想法
+
+然後：
+1. 更新或建立 daily/{date}.md，整理今天做了什麼
+2. 更新 learning/INDEX.md（如果有變動）
+3. 執行 python3 scripts/validate.py
+4. 執行 python3 scripts/commit.py "日結: {date}"
+5. 回報給 Dante 今天的摘要"""
+
+
+async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _check_auth(update):
+        return
+    status_msg = await update.message.reply_text("🌅 正在整理今日主線...")
+    result = await _run_claude(
+        MORNING_PROMPT.format(date=date.today().isoformat()),
+        "sonnet", str(__import__('uuid').uuid4()), resume=False,
+    )
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+    if len(result) <= 4000:
+        await update.message.reply_text(result)
+    else:
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i + 4000])
+
+
+async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _check_auth(update):
+        return
+    status_msg = await update.message.reply_text("🌙 正在整理今日日結...")
+    result = await _run_claude(
+        EVENING_PROMPT.format(date=date.today().isoformat()),
+        "sonnet", str(__import__('uuid').uuid4()), resume=False,
+    )
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+    if len(result) <= 4000:
+        await update.message.reply_text(result)
+    else:
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i + 4000])
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,8 +322,10 @@ async def post_init(app: Application):
     commands = [
         BotCommand("start", "啟動助手"),
         BotCommand("course", "課程學習（Opus）"),
-        BotCommand("opus", "切換 Opus（深度思考）"),
-        BotCommand("sonnet", "切換 Sonnet（日常）"),
+        BotCommand("opus", "切換 Opus"),
+        BotCommand("sonnet", "切換 Sonnet"),
+        BotCommand("morning", "今日主線摘要"),
+        BotCommand("evening", "今日日結"),
         BotCommand("done", "結束對話並儲存"),
         BotCommand("restart", "重啟 Bot"),
     ]
@@ -282,6 +349,8 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("restart", cmd_restart))
+    app.add_handler(CommandHandler("morning", cmd_morning))
+    app.add_handler(CommandHandler("evening", cmd_evening))
     app.add_handler(CommandHandler("course", handle_message))
     app.add_handler(CommandHandler("opus", handle_message))
     app.add_handler(CommandHandler("sonnet", handle_message))

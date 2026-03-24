@@ -8,9 +8,8 @@ COMMAND_ROUTES: dict[str, tuple[str, str]] = {
     "/note": ("sonnet", "note"),
     "/done": ("sonnet", "done"),
     "/restart": ("sonnet", "restart"),
-    # 未來擴展：
-    # "/develop": ("opus", "develop"),  # 觸發開發工作流
-    # "/review": ("opus", "review"),
+    "/morning": ("sonnet", "morning"),
+    "/evening": ("sonnet", "evening"),
 }
 
 DEFAULT_MODEL = "sonnet"
