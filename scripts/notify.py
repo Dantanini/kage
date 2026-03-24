@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""定時通知 — cron 呼叫，發訊息給 Dante 的 TG Bot。
+"""定時通知 — cron 呼叫，發帶按鈕的訊息給 Dante。
 
 用法:
   python3 notify.py morning
   python3 notify.py evening
 """
 
-import asyncio
+import json
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 # Load .env
@@ -23,30 +24,44 @@ if env_path.exists():
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = os.environ.get("TELEGRAM_ADMIN_ID", "")
 
-MESSAGES = {
-    "morning": "🌅 早安！輸入 /morning 看今天的主線建議",
-    "evening": "🌙 辛苦了！輸入 /evening 整理今天的日結",
+NOTIFICATIONS = {
+    "morning": {
+        "text": "🌅 早安！要看今天的主線建議嗎？",
+        "button_text": "查看今日主線",
+        "callback": "morning",
+    },
+    "evening": {
+        "text": "🌙 辛苦了！要整理今天的日結嗎？",
+        "button_text": "開始日結",
+        "callback": "evening",
+    },
 }
 
 
-async def send(text: str):
-    # Use raw HTTP to avoid importing telegram library (lighter for cron)
-    import urllib.request
-    import json
-
+def send(kind: str):
+    notif = NOTIFICATIONS[kind]
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = json.dumps({"chat_id": int(ADMIN_ID), "text": text}).encode()
+    data = json.dumps({
+        "chat_id": int(ADMIN_ID),
+        "text": notif["text"],
+        "reply_markup": {
+            "inline_keyboard": [[{
+                "text": notif["button_text"],
+                "callback_data": notif["callback"],
+            }]]
+        },
+    }).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     urllib.request.urlopen(req, timeout=10)
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in MESSAGES:
-        print(f"用法: python3 notify.py [{'/'.join(MESSAGES.keys())}]")
+    if len(sys.argv) < 2 or sys.argv[1] not in NOTIFICATIONS:
+        print(f"用法: python3 notify.py [{'/'.join(NOTIFICATIONS.keys())}]")
         sys.exit(1)
 
     kind = sys.argv[1]
-    asyncio.run(send(MESSAGES[kind]))
+    send(kind)
     print(f"已發送 {kind} 通知")
 
 

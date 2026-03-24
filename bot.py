@@ -11,6 +11,7 @@ import yaml
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     ContextTypes,
@@ -222,6 +223,44 @@ async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(result[i:i + 4000])
 
 
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button clicks from notifications."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    action = query.data
+    chat_id = query.message.chat_id
+
+    if action == "morning":
+        status_msg = await context.bot.send_message(chat_id, "🌅 正在整理今日主線...")
+        result = await _run_claude(
+            MORNING_PROMPT.format(date=date.today().isoformat()),
+            "sonnet", str(__import__('uuid').uuid4()), resume=False,
+        )
+    elif action == "evening":
+        status_msg = await context.bot.send_message(chat_id, "🌙 正在整理今日日結...")
+        result = await _run_claude(
+            EVENING_PROMPT.format(date=date.today().isoformat()),
+            "sonnet", str(__import__('uuid').uuid4()), resume=False,
+        )
+    else:
+        return
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    if len(result) <= 4000:
+        await context.bot.send_message(chat_id, result)
+    else:
+        for i in range(0, len(result), 4000):
+            await context.bot.send_message(chat_id, result[i:i + 4000])
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -346,6 +385,7 @@ def main():
     logger.info(f"Bot starting, journal: {journal_path}")
 
     app = Application.builder().token(token).post_init(post_init).build()
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("restart", cmd_restart))
