@@ -191,7 +191,7 @@ async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🌅 正在整理今日主線...")
     result = await _run_claude(
         MORNING_PROMPT.format(date=date.today().isoformat()),
-        "sonnet", str(__import__('uuid').uuid4()), resume=False,
+        "opus", str(__import__('uuid').uuid4()), resume=False,
     )
     try:
         await status_msg.delete()
@@ -210,7 +210,7 @@ async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🌙 正在整理今日日結...")
     result = await _run_claude(
         EVENING_PROMPT.format(date=date.today().isoformat()),
-        "sonnet", str(__import__('uuid').uuid4()), resume=False,
+        "opus", str(__import__('uuid').uuid4()), resume=False,
     )
     try:
         await status_msg.delete()
@@ -238,13 +238,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg = await context.bot.send_message(chat_id, "🌅 正在整理今日主線...")
         result = await _run_claude(
             MORNING_PROMPT.format(date=date.today().isoformat()),
-            "sonnet", str(__import__('uuid').uuid4()), resume=False,
+            "opus", str(__import__('uuid').uuid4()), resume=False,
         )
     elif action == "evening":
         status_msg = await context.bot.send_message(chat_id, "🌙 正在整理今日日結...")
         result = await _run_claude(
             EVENING_PROMPT.format(date=date.today().isoformat()),
-            "sonnet", str(__import__('uuid').uuid4()), resume=False,
+            "opus", str(__import__('uuid').uuid4()), resume=False,
         )
     else:
         return
