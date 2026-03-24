@@ -202,9 +202,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = sessions.get_or_create(user_id, intent, model)
     resume = not session.is_first_message
 
-    # Update session model when user explicitly switches
-    session.model = model
-    session.intent = intent
+    # Only update model if user explicitly switched via command
+    if text.startswith("/"):
+        session.model = model
+        session.intent = intent
+    else:
+        # Use session's current model (preserves /opus switch)
+        model = session.model
 
     # Progress feedback — send status then keep typing indicator
     INTENT_LABEL = {
