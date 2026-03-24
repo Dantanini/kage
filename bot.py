@@ -171,6 +171,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     model, intent = route(text)
     logger.info(f"Routed to model={model}, intent={intent}")
 
+    # Strip command prefix before sending to Claude
+    prompt = text
+    if text.startswith("/"):
+        parts = text.split(None, 1)
+        prompt = parts[1] if len(parts) > 1 else ""
+
+    # If command only (no prompt text), just switch model and confirm
+    if not prompt:
+        session = sessions.get_or_create(user_id, intent, model)
+        session.model = model
+        session.intent = intent
+        await update.message.reply_text(f"已切換到 {model}")
+        return
+
     # Handle end intent with confirmation
     if intent == "end":
         session = sessions.get(user_id)
@@ -215,7 +229,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     typing_task = asyncio.create_task(keep_typing())
 
-    result = await _run_claude(text, model, session.session_id, resume=resume)
+    result = await _run_claude(prompt, model, session.session_id, resume=resume)
 
     typing_task.cancel()
 
@@ -264,6 +278,9 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("restart", cmd_restart))
+    app.add_handler(CommandHandler("course", handle_message))
+    app.add_handler(CommandHandler("opus", handle_message))
+    app.add_handler(CommandHandler("sonnet", handle_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(drop_pending_updates=True)
