@@ -50,6 +50,6 @@ class SessionManager:
     def get_or_create(self, user_id: int, intent: str, model: str) -> Session:
         existing = self.get(user_id)
         if existing:
-            existing.touch()
+            existing.last_active = time.time()  # Keep alive but don't change is_first_message
             return existing
         return self.create(user_id, intent, model)

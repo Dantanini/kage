@@ -346,7 +346,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.delete()
     except Exception:
         pass
-    session.touch()
+
+    # Only mark session as "has talked to Claude" if it actually succeeded
+    if not result.startswith("⚠️"):
+        session.touch()
 
     # Split long messages (Telegram limit: 4096 chars)
     if len(result) <= 4000:
