@@ -7,15 +7,18 @@
 - 停止 bot → 執行 `systemctl --user stop kage`
 - 不要用 nohup / & 手動啟動 bot，一律走 systemd
 
+## 開發流程
+
+- **TDD 優先**：新增功能或修改核心邏輯時，先寫 test case 再實作。不接受先寫功能後補 test。
+  - 流程：定義 test cases → 實作 tests → 寫 code pass tests → refactor
+  - 如果使用者直接要求「幫我寫 XXX 功能」，先問「要不要先定義 test cases？」
+  - 純 config 變更、文件更新不需要 test
+- **跑測試後才 commit**：commit 前必須先跑 test，全過才 commit
+
 ## 工程原則
 
 - 確定性操作用腳本，不手打指令
 - 機敏資訊（token, ID）只放 .env，不進程式碼
 - 所有 commit 前經過 3 層 secret 掃描（.githooks/pre-commit）
 - 絕不做破壞性 git 操作（force push, rm -rf .git）
-
-## systemd service
-
-- 路徑：`~/.config/systemd/user/kage.service`
-- Restart=always，crash 會自動重啟
-- 改 service 檔後需 `systemctl --user daemon-reload`
+- 能用設計約束的就不要靠紀律約束
