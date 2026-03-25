@@ -80,7 +80,7 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
 
-    cmd = [claude_bin, "-p", "--model", model, "--permission-mode", "bypassPermissions"]
+    cmd = [claude_bin, "-p", "--model", model, "--dangerously-skip-permissions"]
     if resume:
         cmd.extend(["--resume", session_id])
     else:
