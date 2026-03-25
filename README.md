@@ -6,19 +6,13 @@ Personal AI assistant via Telegram — a thin relay to Claude Code CLI.
 
 kage is a lightweight Telegram bot that bridges your messages to [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). Instead of building AI logic into the bot, kage keeps itself thin and delegates all intelligence to Claude Code's native capabilities — Skills, Hooks, CLAUDE.md, and tool use.
 
-The bot automatically classifies your intent and routes to the appropriate Claude model:
-
-| Intent | Model | Example |
-|---|---|---|
-| Course learning, architecture | Opus | "我想繼續學 prompt engineering" |
-| Notes, summaries, commits | Sonnet | "幫我整理今天做的事" |
-| Intent classification | Haiku | (internal routing, invisible to user) |
-
 ## Architecture
 
 ```
-Telegram → kage (thin relay) → claude -p → your repo's .claude/ (Skills, CLAUDE.md)
+Telegram → kage (thin relay) → claude -p --permission-mode bypassPermissions
                                    ↓
+                              works in selected repo's directory
+                              reads repo's .claude/CLAUDE.md
                               reads/writes repo files
                               git commit + push
 ```
@@ -26,7 +20,7 @@ Telegram → kage (thin relay) → claude -p → your repo's .claude/ (Skills, C
 Key design decisions:
 - **Bot has no AI logic** — all intelligence lives in each repo's `.claude/` directory
 - **Adding features = adding Skills** — no bot code changes needed
-- **Model routing via Haiku** — fast intent classification, then dispatch to the right model
+- **Multi-repo** — switch working directory with `/repo` command
 - **Session management** — conversations persist within a session, with 30-min timeout
 - **Cross-platform** — runs on Linux, macOS, Windows
 
@@ -58,11 +52,15 @@ TELEGRAM_ADMIN_ID=your-telegram-user-id
 DEV_JOURNAL_PATH=/path/to/your/repo
 ```
 
-Edit `config.yaml` to customize model routing and session timeout.
-
 ### Run
 
 ```bash
+# Recommended: use systemd
+cp kage.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now kage
+
+# Or run directly
 python3 bot.py
 ```
 
@@ -71,38 +69,61 @@ python3 bot.py
 | Command | Description |
 |---|---|
 | `/start` | Start the assistant |
-| `/course` | Enter course learning mode (Opus) |
-| `/note` | Quick note mode (Sonnet) |
-| `/done` | End session, save and commit |
+| `/course` | Course learning mode (Opus) |
+| `/opus` | Switch to Opus (deep thinking) |
+| `/sonnet` | Switch to Sonnet (daily chat) |
+| `/repo` | Show/switch working directory |
+| `/repo kage` | Switch to bot's own repo |
+| `/repo journal` | Switch to dev-journal |
+| `/repo home` | Switch to home directory |
+| `/morning` | Daily priorities summary (Opus) |
+| `/evening` | Daily wrap-up + commit (Opus) |
+| `/done` | End session, trigger save flow |
+| `/restart` | Restart bot remotely |
 
-You can also just type naturally — Haiku will classify your intent automatically.
+Just type naturally for conversation — defaults to Sonnet.
+
+## Daily notifications
+
+Cron sends inline-button notifications at 8am and 10pm. Tap the button to trigger Claude; ignore to save tokens.
+
+```
+0 8  * * * python3 /path/to/kage/scripts/notify.py morning
+0 22 * * * python3 /path/to/kage/scripts/notify.py evening
+```
 
 ## Security
 
-Three-layer pre-commit secret protection:
-
-1. **File blocklist** — `.env`, `*.pem`, `*.key` cannot be staged
-2. **Regex scan** — detects common secret patterns in staged diffs
-3. **gitleaks** — deep scan with 800+ secret patterns
+- **Auth** — only admin user can interact; strangers are silently ignored
+- **Three-layer pre-commit secret scan** — file blocklist, regex, gitleaks (800+ patterns)
+- **Pre-push hook** — blocks force push to protected branches
+- **No bot username in code** — not discoverable from public repo
 
 ## Project structure
 
 ```
 kage/
-├── bot.py          ← Telegram ↔ claude -p relay
-├── router.py       ← Haiku intent classification + model routing
-├── session.py      ← Session lifecycle management
-├── config.yaml     ← Model mapping and settings
+├── bot.py              ← Telegram ↔ claude -p relay
+├── router.py           ← Command routing (no LLM, pure Python)
+├── session.py          ← Session lifecycle management
+├── batcher.py          ← Message batching (unused, kept for reference)
+├── config.yaml         ← Session timeout settings
+├── scripts/
+│   ├── restart.sh      ← Safe bot restart (kills rogue processes)
+│   └── notify.py       ← Cron notification with inline buttons
+├── .claude/
+│   └── CLAUDE.md       ← Operational rules for developers
 ├── .githooks/
-│   └── pre-commit  ← 3-layer secret scanning
+│   ├── pre-commit      ← 3-layer secret scanning
+│   └── pre-push        ← Block force push
 └── .env.example
 ```
 
 ## Design philosophy
 
 - **Thin shell** — bot is a relay, not a brain
-- **Scripts for deterministic tasks** — dates, git, validation use Python scripts, not LLM
-- **LLM for reasoning** — intent classification, content writing, deep discussion
+- **Scripts for deterministic tasks** — restart, notifications, git ops use scripts, not LLM
+- **LLM for reasoning** — content writing, learning, deep discussion
 - **Expandable** — add repos, add Skills, no bot refactoring needed
 
 ## License
