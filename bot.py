@@ -47,13 +47,17 @@ TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 # Session manager
 sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
 
+# Repo management — which directory claude -p runs in
+REPOS = {
+    "journal": str(Path(os.environ.get("DEV_JOURNAL_PATH", "")) or Path.home() / "dev-journal"),
+    "kage": str(Path.home() / "tg-bot"),
+    "home": str(Path.home()),
+}
+_current_repo: dict[str, str] = {"name": "journal", "path": REPOS["journal"]}
 
 
 def _get_journal_path() -> str:
-    path = os.environ.get("DEV_JOURNAL_PATH", "")
-    if not path:
-        path = str(Path.home() / "dev-journal")
-    return path
+    return REPOS["journal"]
 
 
 def _find_claude() -> str:
@@ -71,12 +75,12 @@ def _find_claude() -> str:
     raise FileNotFoundError("claude CLI not found")
 
 
-async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False) -> str:
+async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
     """Execute claude -p and return output."""
     claude_bin = _find_claude()
-    journal_path = _get_journal_path()
+    work_dir = cwd or _current_repo.get("path", _get_journal_path())
 
-    cmd = [claude_bin, "-p", "--model", model]
+    cmd = [claude_bin, "-p", "--model", model, "--permission-mode", "bypassPermissions"]
     if resume:
         cmd.extend(["--resume", session_id])
     else:
@@ -84,7 +88,7 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
 
     # Prepend date context on first message of session
     if not resume:
-        prompt = f"[系統] 今天是 {date.today().isoformat()}。\n\n{prompt}"
+        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n\n{prompt}"
 
     cmd.append(prompt)
 
@@ -92,7 +96,7 @@ async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = F
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=journal_path,
+        cwd=work_dir,
     )
     stdout, stderr = await proc.communicate()
 
@@ -147,6 +151,30 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions.close(update.effective_user.id)
     await update.message.reply_text(result[:4000])
     await update.message.reply_text("✅ 對話已結束")
+
+
+async def cmd_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _check_auth(update):
+        return
+    args = update.message.text.split(None, 1)
+    if len(args) < 2:
+        lines = [f"目前：{_current_repo['name']} ({_current_repo['path']})\n", "可用 repo："]
+        for name, path in REPOS.items():
+            exists = "✅" if Path(path).exists() else "❌"
+            lines.append(f"  {exists} /repo {name} → {path}")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    name = args[1].strip().lower()
+    if name not in REPOS:
+        await update.message.reply_text(f"未知 repo: {name}\n可用: {', '.join(REPOS.keys())}")
+        return
+
+    _current_repo["name"] = name
+    _current_repo["path"] = REPOS[name]
+    # Close current session since we're switching context
+    sessions.close(update.effective_user.id)
+    await update.message.reply_text(f"已切換到 {name} ({REPOS[name]})\nSession 已重置")
 
 
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,6 +396,7 @@ async def post_init(app: Application):
         BotCommand("sonnet", "切換 Sonnet"),
         BotCommand("morning", "今日主線摘要"),
         BotCommand("evening", "今日日結"),
+        BotCommand("repo", "切換工作目錄"),
         BotCommand("done", "結束對話並儲存"),
         BotCommand("restart", "重啟 Bot"),
     ]
@@ -392,6 +421,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("restart", cmd_restart))
+    app.add_handler(CommandHandler("repo", cmd_repo))
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
     app.add_handler(CommandHandler("course", handle_message))
