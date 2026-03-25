@@ -39,5 +39,22 @@ else
     echo "⚠️  gitleaks not found, skipping deep scan (layers 1-2 still active)"
 fi
 
+# === Layer 4: README reminder ===
+CODE_FILES="bot.py router.py session.py"
+CHANGED=$(git diff --cached --name-only)
+CODE_CHANGED=false
+for f in $CODE_FILES; do
+    echo "$CHANGED" | grep -q "^$f$" && CODE_CHANGED=true
+done
+README_CHANGED=$(echo "$CHANGED" | grep -q "^README.md$" && echo true || echo false)
+
+if [ "$CODE_CHANGED" = true ] && [ "$README_CHANGED" = false ]; then
+    echo ""
+    echo "⚠️  核心程式碼有改動但 README.md 沒更新"
+    echo "   如果新增/移除了功能或指令，請一併更新 README"
+    echo "   （這只是提醒，不會擋 commit）"
+    echo ""
+fi
+
 echo "✅ Secret scan passed (3 layers)"
 exit 0
