@@ -14,6 +14,7 @@
   - 如果使用者直接要求「幫我寫 XXX 功能」，先問「要不要先定義 test cases？」
   - 純 config 變更、文件更新不需要 test
 - **跑測試後才 commit**：commit 前必須先跑 test，全過才 commit
+- **commit message 用英文**，conventional commits 格式（feat/fix/docs/refactor/chore），方便未來搜尋
 
 ## 工程原則
 
