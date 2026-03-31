@@ -13,10 +13,14 @@ class Session:
     model: str
     last_active: float = field(default_factory=time.time)
     is_first_message: bool = True
+    qa_log: list = field(default_factory=list)  # [(prompt, response), ...]
 
     def touch(self):
         self.last_active = time.time()
         self.is_first_message = False
+
+    def qa_log_size(self) -> int:
+        return sum(len(q) + len(a) for q, a in self.qa_log)
 
     def is_expired(self, timeout_seconds: int = 1800) -> bool:
         return (time.time() - self.last_active) > timeout_seconds

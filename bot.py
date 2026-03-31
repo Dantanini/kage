@@ -75,37 +75,130 @@ def _find_claude() -> str:
     raise FileNotFoundError("claude CLI not found")
 
 
-async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
-    """Execute claude -p and return output."""
+MAX_RETRIES = 2
+QA_LOG_FLUSH_SIZE = 20_000  # chars
+
+
+async def _git_pull(repo_path: str) -> str | None:
+    """Run git pull in the given repo. Returns error message or None on success."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "pull", "--ff-only",
+            cwd=repo_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        output = (stdout.decode() + stderr.decode()).strip()
+        if proc.returncode != 0:
+            logger.warning(f"git pull failed in {repo_path}: {output}")
+            return f"git pull 失敗: {output[:200]}"
+        logger.info(f"git pull in {repo_path}: {output}")
+        return None
+    except Exception as e:
+        logger.warning(f"git pull error: {e}")
+        return str(e)
+
+
+async def _kill_stale_claude() -> None:
+    """Kill any stopped/zombie claude -p processes to prevent session conflicts."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pgrep", "-f", "claude.*-p",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if not stdout.strip():
+            return
+        for pid_str in stdout.decode().strip().split("\n"):
+            pid = int(pid_str)
+            # Check process state — kill stopped (T) or zombie (Z) ones
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text()
+                state = stat.split(")")[1].strip().split()[0]
+                if state in ("T", "t", "Z"):
+                    os.kill(pid, 9)
+                    logger.info(f"Killed stale claude process {pid} (state={state})")
+            except (FileNotFoundError, ProcessLookupError, IndexError):
+                pass
+    except Exception as e:
+        logger.debug(f"_kill_stale_claude: {e}")
+
+
+async def _run_claude_once(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
+    """Single attempt to execute claude -p and return output."""
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
 
+    # NOTE: --dangerously-skip-permissions is required because in subprocess mode,
+    # Claude CLI's permission prompts get mixed into stdout as plain text.
+    # Compensating controls: single-admin auth (bot.py:_check_auth),
+    # CLAUDE.md operation rules, and cwd locked to predefined repos only.
+    # GitHub branch protection is enabled on all remote branches.
+    # TODO: migrate to --permission-mode allowedTools when CLI supports clean stdout.
     cmd = [claude_bin, "-p", "--model", model, "--dangerously-skip-permissions"]
     if resume:
         cmd.extend(["--resume", session_id])
     else:
         cmd.extend(["--session-id", session_id])
 
-    # Prepend date context on first message of session
     if not resume:
         prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n\n{prompt}"
 
-    cmd.append(prompt)
-
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
     )
-    stdout, stderr = await proc.communicate()
+    stdout, stderr = await proc.communicate(input=prompt.encode())
 
     if proc.returncode != 0:
-        err = stderr.decode().strip()
-        logger.error(f"claude error: {err}")
-        return f"⚠️ Claude 執行失敗:\n{err[:500]}"
+        raise RuntimeError(stderr.decode().strip())
 
     return stdout.decode().strip()
+
+
+async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
+    """Execute claude -p with retry (max MAX_RETRIES). Returns error string on final failure."""
+    last_err = ""
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return await _run_claude_once(prompt, model, session_id, resume=resume, cwd=cwd)
+        except Exception as e:
+            last_err = str(e)
+            logger.warning(f"claude attempt {attempt + 1} failed: {last_err[:200]}")
+            # Session conflict → clean up stale processes, start fresh
+            if "already in use" in last_err:
+                logger.info("Session conflict detected, cleaning up and falling back to new session")
+                await _kill_stale_claude()
+                session_id = str(__import__("uuid").uuid4())
+                resume = False
+            if attempt < MAX_RETRIES:
+                await asyncio.sleep(2)
+
+    logger.error(f"claude failed after {MAX_RETRIES + 1} attempts: {last_err}")
+    return f"⚠️ Claude 執行失敗（已重試 {MAX_RETRIES} 次）:\n{last_err[:400]}"
+
+
+async def _flush_qa_log(session, cwd: str | None = None) -> str | None:
+    """Send accumulated QA log to a fresh Claude session to write course notes."""
+    if not session.qa_log:
+        return None
+
+    import uuid as _uuid
+    log_text = "\n\n---\n\n".join(
+        f"**問：** {q}\n\n**答：** {a}" for q, a in session.qa_log
+    )
+    prompt = (
+        "以下是這次學習對話的完整問答紀錄。請整理成結構化課程筆記，"
+        "存到 learning/ 對應的檔案，並更新 learning/INDEX.md。\n\n" + log_text
+    )
+    result = await _run_claude(prompt, session.model, str(_uuid.uuid4()), resume=False, cwd=cwd)
+    session.qa_log.clear()
+    return result
 
 
 async def _check_auth(update: Update) -> bool:
@@ -142,6 +235,13 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("正在結束對話並儲存紀錄...")
+
+    # Flush QA log first (backup of full conversation for notes)
+    if session.qa_log:
+        flush_result = await _flush_qa_log(session)
+        if flush_result and flush_result.startswith("⚠️"):
+            logger.warning(f"QA log flush failed: {flush_result[:200]}")
+
     result = await _run_claude(
         "使用者要結束對話。請執行結束流程。",
         session.model,
@@ -217,6 +317,9 @@ async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
     status_msg = await update.message.reply_text("🌅 正在整理今日主線...")
+    pull_err = await _git_pull(_get_journal_path())
+    if pull_err:
+        await update.message.reply_text(f"⚠️ {pull_err}\n繼續執行...")
     result = await _run_claude(
         MORNING_PROMPT.format(date=date.today().isoformat()),
         "opus", str(__import__('uuid').uuid4()), resume=False,
@@ -236,6 +339,9 @@ async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
     status_msg = await update.message.reply_text("🌙 正在整理今日日結...")
+    pull_err = await _git_pull(_get_journal_path())
+    if pull_err:
+        await update.message.reply_text(f"⚠️ {pull_err}\n繼續執行...")
     result = await _run_claude(
         EVENING_PROMPT.format(date=date.today().isoformat()),
         "opus", str(__import__('uuid').uuid4()), resume=False,
@@ -261,6 +367,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action = query.data
     chat_id = query.message.chat_id
+
+    # Sync repo before morning/evening tasks
+    if action in ("morning", "evening"):
+        pull_err = await _git_pull(_get_journal_path())
+        if pull_err:
+            await context.bot.send_message(chat_id, f"⚠️ {pull_err}\n繼續執行...")
 
     if action == "morning":
         status_msg = await context.bot.send_message(chat_id, "🌅 正在整理今日主線...")
@@ -378,6 +490,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Only mark session as "has talked to Claude" if it actually succeeded
     if not result.startswith("⚠️"):
         session.touch()
+        session.qa_log.append((prompt, result))
+
+        # Auto-flush if log is too large
+        if session.qa_log_size() >= QA_LOG_FLUSH_SIZE:
+            await update.message.reply_text("📦 對話記錄已達上限，自動整理中...")
+            flush_result = await _flush_qa_log(session)
+            if flush_result and not flush_result.startswith("⚠️"):
+                await update.message.reply_text("✅ 學習筆記已自動儲存，繼續對話")
 
     # Split long messages (Telegram limit: 4096 chars)
     if len(result) <= 4000:
