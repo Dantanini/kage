@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from auto_deploy import has_new_commits, is_bot_idle, build_notify_message
+from auto_deploy import has_new_commits, is_bot_idle, build_notify_message, should_retry, RETRY_HOURS
 
 
 class TestHasNewCommits:
@@ -71,3 +71,22 @@ class TestBuildNotifyMessage:
         msg = build_notify_message(success=None, reason="bot is active")
         assert "skip" in msg.lower() or "跳過" in msg
         assert "active" in msg
+
+
+class TestShouldRetry:
+    """Decide whether to retry deployment after being skipped due to active bot."""
+
+    def test_first_attempt_can_retry(self):
+        """Hour 0 (03:00) — first skip, should retry later."""
+        assert should_retry(attempt=0) is True
+
+    def test_max_attempts_reached(self):
+        """After RETRY_HOURS attempts, give up."""
+        assert should_retry(attempt=RETRY_HOURS) is False
+
+    def test_mid_attempts_can_retry(self):
+        assert should_retry(attempt=1) is True
+
+    def test_retry_hours_is_three(self):
+        """Retry window is 03:00–06:00 (3 retries max)."""
+        assert RETRY_HOURS == 3

@@ -21,6 +21,8 @@ from tg_notify import send_telegram_message
 REPO_DIR = Path(__file__).resolve().parent
 LAST_ACTIVITY_FILE = REPO_DIR / ".last_activity"
 IDLE_MINUTES = 30
+RETRY_HOURS = 3  # 03:00 → max 06:00, then give up
+RETRY_STATE_FILE = REPO_DIR / ".deploy_attempt"
 LOG_FILE = REPO_DIR / "logs" / "auto_deploy.log"
 
 
@@ -89,6 +91,42 @@ def build_notify_message(
     return f"✗ Auto-deploy 失敗: {error}"
 
 
+def should_retry(attempt: int) -> bool:
+    """Whether to schedule another attempt after being skipped."""
+    return attempt < RETRY_HOURS
+
+
+def get_attempt() -> int:
+    """Read current retry attempt count from state file."""
+    try:
+        return int(RETRY_STATE_FILE.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def set_attempt(n: int):
+    """Write retry attempt count to state file."""
+    RETRY_STATE_FILE.write_text(str(n))
+
+
+def clear_attempt():
+    """Remove retry state file after successful deploy or final give-up."""
+    RETRY_STATE_FILE.unlink(missing_ok=True)
+
+
+def schedule_retry(attempt: int):
+    """Schedule next attempt in 1 hour via `at` command."""
+    set_attempt(attempt + 1)
+    try:
+        subprocess.run(
+            f'echo "cd {REPO_DIR} && python3 auto_deploy.py" | at now + 1 hour',
+            shell=True, check=True, capture_output=True,
+        )
+        log(f"Retry scheduled (attempt {attempt + 1}/{RETRY_HOURS})")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        log(f"Failed to schedule retry: {e}")
+
+
 def send_telegram(message: str):
     """Send notification via Telegram Bot API."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -132,13 +170,26 @@ def main():
         return
 
     # 2. Check if bot is idle
+    attempt = get_attempt()
     if not is_bot_idle():
-        msg = build_notify_message(success=None, reason="bot is active")
-        log(msg)
-        send_telegram(msg)
+        if should_retry(attempt):
+            schedule_retry(attempt)
+            msg = build_notify_message(
+                success=None,
+                reason=f"bot is active, retry in 1h ({attempt + 1}/{RETRY_HOURS})",
+            )
+            log(msg)
+        else:
+            clear_attempt()
+            msg = build_notify_message(
+                success=None, reason="bot is active, max retries reached",
+            )
+            log(msg)
+            send_telegram(msg)
         return
 
     # 3. Deploy
+    clear_attempt()
     try:
         summary = deploy()
         msg = build_notify_message(success=True, commits_summary=summary)
