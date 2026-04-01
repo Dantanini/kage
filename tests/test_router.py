@@ -13,7 +13,7 @@ class TestNoDuplicateKeys:
         from pathlib import Path
         import re
 
-        source = (Path(__file__).parent.parent / "router.py").read_text()
+        source = (Path(__file__).parent.parent / "router.py").read_text(encoding="utf-8")
         keys = re.findall(r'^\s+"(/\w+)":', source, re.MULTILINE)
         duplicates = [k for k in keys if keys.count(k) > 1]
         assert duplicates == [], f"Duplicate keys in COMMAND_ROUTES: {set(duplicates)}"

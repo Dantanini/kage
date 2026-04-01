@@ -105,12 +105,15 @@ Cron sends inline-button notifications at 8am and 10pm. Tap the button to trigge
 kage/
 ├── bot.py              ← Telegram ↔ claude -p relay
 ├── router.py           ← Command routing (no LLM, pure Python)
-├── session.py          ← Session lifecycle management
-├── batcher.py          ← Message batching (unused, kept for reference)
+├── session.py          ← Session lifecycle management + hooks
+├── memory.py           ← Persistent memory layer (reads/writes dev-journal)
+├── workflows.py        ← Code-defined multi-step workflow chains
 ├── config.yaml         ← Session timeout settings
 ├── scripts/
 │   ├── restart.sh      ← Safe bot restart (kills rogue processes)
 │   └── notify.py       ← Cron notification with inline buttons
+├── tests/              ← pytest test suite (49 tests)
+├── .github/workflows/  ← GitHub Actions CI
 ├── .claude/
 │   └── CLAUDE.md       ← Operational rules for developers
 ├── .githooks/
@@ -125,6 +128,8 @@ kage/
 - **Scripts for deterministic tasks** — restart, notifications, git ops use scripts, not LLM
 - **LLM for reasoning** — content writing, learning, deep discussion
 - **Expandable** — add repos, add Skills, no bot refactoring needed
+- **Persistent memory** — auto-saves conversation context to dev-journal, injected into next session
+- **Code-defined workflows** — multi-step chains with per-step model selection (sonnet for gathering, opus for synthesis)
 
 ## License
 
