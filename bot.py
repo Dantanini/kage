@@ -18,8 +18,15 @@ from telegram.ext import (
     filters,
 )
 
+from memory import MemoryStore
 from router import route
 from session import SessionManager
+from workflows import (
+    build_morning_steps,
+    build_evening_steps,
+    run_workflow,
+    format_workflow_results,
+)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -44,9 +51,6 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
 ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 
-# Session manager
-sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
-
 # Repo management — which directory claude -p runs in
 REPOS = {
     "journal": str(Path(os.environ.get("DEV_JOURNAL_PATH", "")) or Path.home() / "dev-journal"),
@@ -54,6 +58,46 @@ REPOS = {
     "home": str(Path.home()),
 }
 _current_repo: dict[str, str] = {"name": "journal", "path": REPOS["journal"]}
+
+# Session manager
+sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
+
+# Persistent memory
+memory_store = MemoryStore(base_dir=REPOS["journal"])
+
+
+# --- Session hooks ---
+def _make_git_pull_hook():
+    """Factory: creates a start hook that git-pulls the current repo."""
+    async def hook(session):
+        repo_path = _current_repo.get("path", _get_journal_path())
+        err = await _git_pull(repo_path)
+        if err:
+            logger.warning(f"SessionStart git pull failed: {err}")
+    return hook
+
+
+def _make_memory_save_hook():
+    """Factory: creates an end hook that saves session memory."""
+    async def hook(session):
+        if not session.qa_log:
+            return
+        prompt = memory_store.build_save_prompt(session.qa_log)
+        if not prompt:
+            return
+        import uuid as _uuid
+        result = await _run_claude(
+            prompt, "sonnet", str(_uuid.uuid4()), resume=False,
+        )
+        if result.startswith("\u26a0\ufe0f"):
+            logger.warning(f"Memory save failed: {result[:200]}")
+        else:
+            logger.info("Session memory saved successfully")
+    return hook
+
+
+sessions.register_start_hook(_make_git_pull_hook)
+sessions.register_end_hook(_make_memory_save_hook)
 
 
 def _get_journal_path() -> str:
@@ -144,7 +188,8 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
         cmd.extend(["--session-id", session_id])
 
     if not resume:
-        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n\n{prompt}"
+        memory_prefix = memory_store.build_context_prefix()
+        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{memory_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -248,7 +293,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.session_id,
         resume=True,
     )
-    sessions.close(update.effective_user.id)
+    await sessions.close(update.effective_user.id)
     await update.message.reply_text(result[:4000])
     await update.message.reply_text("✅ 對話已結束")
 
@@ -273,7 +318,7 @@ async def cmd_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _current_repo["name"] = name
     _current_repo["path"] = REPOS[name]
     # Close current session since we're switching context
-    sessions.close(update.effective_user.id)
+    await sessions.close(update.effective_user.id)
     await update.message.reply_text(f"已切換到 {name} ({REPOS[name]})\nSession 已重置")
 
 
@@ -316,14 +361,15 @@ EVENING_PROMPT = """[系統] 今天是 {date}。這是晚上日結。
 async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
-    status_msg = await update.message.reply_text("🌅 正在整理今日主線...")
+    status_msg = await update.message.reply_text("🌅 正在整理今日主線（分步執行中）...")
     pull_err = await _git_pull(_get_journal_path())
     if pull_err:
         await update.message.reply_text(f"⚠️ {pull_err}\n繼續執行...")
-    result = await _run_claude(
-        MORNING_PROMPT.format(date=date.today().isoformat()),
-        "opus", str(__import__('uuid').uuid4()), resume=False,
-    )
+
+    steps = build_morning_steps()
+    results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
+    result = format_workflow_results(results)
+
     try:
         await status_msg.delete()
     except Exception:
@@ -338,14 +384,15 @@ async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
-    status_msg = await update.message.reply_text("🌙 正在整理今日日結...")
+    status_msg = await update.message.reply_text("🌙 正在整理今日日結（分步執行中）...")
     pull_err = await _git_pull(_get_journal_path())
     if pull_err:
         await update.message.reply_text(f"⚠️ {pull_err}\n繼續執行...")
-    result = await _run_claude(
-        EVENING_PROMPT.format(date=date.today().isoformat()),
-        "opus", str(__import__('uuid').uuid4()), resume=False,
-    )
+
+    steps = build_evening_steps()
+    results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
+    result = format_workflow_results(results)
+
     try:
         await status_msg.delete()
     except Exception:
@@ -375,17 +422,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id, f"⚠️ {pull_err}\n繼續執行...")
 
     if action == "morning":
-        status_msg = await context.bot.send_message(chat_id, "🌅 正在整理今日主線...")
-        result = await _run_claude(
-            MORNING_PROMPT.format(date=date.today().isoformat()),
-            "opus", str(__import__('uuid').uuid4()), resume=False,
-        )
+        status_msg = await context.bot.send_message(chat_id, "🌅 正在整理今日主線（分步執行中）...")
+        steps = build_morning_steps()
+        results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
+        result = format_workflow_results(results)
     elif action == "evening":
-        status_msg = await context.bot.send_message(chat_id, "🌙 正在整理今日日結...")
-        result = await _run_claude(
-            EVENING_PROMPT.format(date=date.today().isoformat()),
-            "opus", str(__import__('uuid').uuid4()), resume=False,
-        )
+        status_msg = await context.bot.send_message(chat_id, "🌙 正在整理今日日結（分步執行中）...")
+        steps = build_evening_steps()
+        results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
+        result = format_workflow_results(results)
     else:
         return
 
@@ -445,6 +490,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Get or create session
     session = sessions.get_or_create(user_id, intent, model)
     resume = not session.is_first_message
+
+    # Run start hooks on first message (git pull, etc.)
+    hook_errors = await session.run_start_hooks()
+    for err in hook_errors:
+        logger.warning(f"Session start hook: {err}")
 
     # Only update model if user explicitly switched via command
     if text.startswith("/"):
