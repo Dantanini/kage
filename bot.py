@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shutil
+import time
 from datetime import date
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from telegram.ext import (
 from memory import MemoryStore
 from router import route
 from session import SessionManager
+from tg_notify import build_memory_save_message, send_telegram_message
 from workflows import (
     build_morning_steps,
     build_evening_steps,
@@ -49,6 +51,12 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
 ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
+LAST_ACTIVITY_FILE = Path(__file__).resolve().parent / ".last_activity"
+
+
+def _touch_activity():
+    """Write current timestamp for auto-deploy idle check."""
+    LAST_ACTIVITY_FILE.write_text(str(time.time()))
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 
 # Repo management — which directory claude -p runs in
@@ -89,10 +97,15 @@ def _make_memory_save_hook():
         result = await _run_claude(
             prompt, "sonnet", str(_uuid.uuid4()), resume=False,
         )
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
         if result.startswith("\u26a0\ufe0f"):
             logger.warning(f"Memory save failed: {result[:200]}")
+            msg = build_memory_save_message(success=False, error=result[:100])
         else:
             logger.info("Session memory saved successfully")
+            msg = build_memory_save_message(success=True, qa_count=len(session.qa_log))
+        send_telegram_message(msg, token=token, chat_id=admin_id)
     return hook
 
 
@@ -392,6 +405,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.from_user.id != ADMIN_ID:
         return
 
+    _touch_activity()
+
     action = query.data
     chat_id = query.message.chat_id
 
@@ -429,6 +444,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
+
+    _touch_activity()
 
     text = update.message.text
     if not text:
