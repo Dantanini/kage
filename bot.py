@@ -325,37 +325,17 @@ async def cmd_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
+
+    # Save all active sessions before restart
+    user_id = update.effective_user.id
+    session = sessions.get(user_id)
+    if session and session.qa_log:
+        await update.message.reply_text("💾 先儲存記憶再重啟...")
+        await sessions.close(user_id)
+
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
     os._exit(0)
-
-
-MORNING_PROMPT = """[系統] 今天是 {date}。這是早上摘要。
-
-請執行以下步驟：
-1. 讀 profile/current-focus.md 了解目前三條主線
-2. 讀最近 3 天的 daily/*.md 了解近期進度
-3. 讀 learning/INDEX.md 了解學習進度
-4. 讀 decisions/INDEX.md 了解近期決策
-
-然後給 Dante 一份簡短的今日建議：
-- 今天最重要的 1-2 件事（根據主線優先順序）
-- 學習可以從哪裡繼續
-- 有沒有什麼卡住的需要處理"""
-
-EVENING_PROMPT = """[系統] 今天是 {date}。這是晚上日結。
-
-請執行以下步驟：
-1. 讀今天的 daily/{date}.md（如果存在）
-2. 讀 learning/INDEX.md 確認今天有沒有學習進度
-3. 讀 inbox/raw-notes.md 看有沒有今天的零散想法
-
-然後：
-1. 更新或建立 daily/{date}.md，整理今天做了什麼
-2. 更新 learning/INDEX.md（如果有變動）
-3. 執行 python3 scripts/validate.py
-4. 執行 python3 scripts/commit.py "日結: {date}"
-5. 回報給 Dante 今天的摘要"""
 
 
 async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):

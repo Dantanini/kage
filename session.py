@@ -24,6 +24,7 @@ class Session:
     qa_log: list = field(default_factory=list)  # [(prompt, response), ...]
     _on_start_hooks: list[SessionHook] = field(default_factory=list)
     _on_end_hooks: list[SessionHook] = field(default_factory=list)
+    _save_timer: object | None = field(default=None, repr=False)
     _started: bool = False
 
     def add_start_hook(self, hook: SessionHook) -> None:
@@ -62,6 +63,29 @@ class Session:
     def touch(self):
         self.last_active = time.time()
         self.is_first_message = False
+        self._schedule_auto_save()
+
+    def _schedule_auto_save(self, delay_minutes: int = 29) -> None:
+        """Reset the auto-save timer. Fires end hooks after delay_minutes of inactivity."""
+        # Cancel previous timer
+        if self._save_timer and not self._save_timer.done():
+            self._save_timer.cancel()
+
+        async def _auto_save():
+            try:
+                await asyncio.sleep(delay_minutes * 60)
+                logger.info(f"Auto-save triggered for session {self.session_id[:8]}")
+                await self.run_end_hooks()
+            except asyncio.CancelledError:
+                pass  # Timer was reset by new message, this is normal
+            except Exception as e:
+                logger.warning(f"Auto-save failed: {e}")
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._save_timer = loop.create_task(_auto_save())
+        except RuntimeError:
+            pass  # No event loop (e.g. in tests)
 
     def qa_log_size(self) -> int:
         return sum(len(q) + len(a) for q, a in self.qa_log)
@@ -89,6 +113,8 @@ class SessionManager:
         session = self._sessions.get(user_id)
         if session and session.is_expired(self._timeout):
             del self._sessions[user_id]
+            # Auto-save timer already handles memory save,
+            # no need to trigger end hooks again here
             return None
         return session
 
@@ -111,12 +137,18 @@ class SessionManager:
         """Close session and run end hooks. Now async."""
         session = self._sessions.pop(user_id, None)
         if session:
+            # Cancel auto-save timer to prevent duplicate saves
+            if session._save_timer and not session._save_timer.done():
+                session._save_timer.cancel()
             await session.run_end_hooks()
         return session
 
     def close_sync(self, user_id: int) -> Session | None:
         """Close session without running hooks (for non-async contexts)."""
-        return self._sessions.pop(user_id, None)
+        session = self._sessions.pop(user_id, None)
+        if session and session._save_timer and not session._save_timer.done():
+            session._save_timer.cancel()
+        return session
 
     def get_or_create(self, user_id: int, intent: str, model: str) -> Session:
         existing = self.get(user_id)
