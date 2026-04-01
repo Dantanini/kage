@@ -33,6 +33,7 @@ class TestCommandRouting:
             ("/note", "sonnet", "note"),
             ("/done", "sonnet", "done"),
             ("/restart", "sonnet", "restart"),
+            ("/release", "sonnet", "release"),
         ],
     )
     def test_command_routes(self, message, expected_model, expected_intent):
