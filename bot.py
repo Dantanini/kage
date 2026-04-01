@@ -4,6 +4,8 @@ import asyncio
 import logging
 import os
 import shutil
+import subprocess
+import time
 from datetime import date
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from telegram.ext import (
 from memory import MemoryStore
 from router import route
 from session import SessionManager
+from tg_notify import build_memory_save_message, send_telegram_message
 from workflows import (
     build_morning_steps,
     build_evening_steps,
@@ -49,6 +52,13 @@ with open(CONFIG_PATH, encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
 ADMIN_ID = int(os.environ.get("TELEGRAM_ADMIN_ID", "0"))
+REPO_DIR = Path(__file__).resolve().parent
+LAST_ACTIVITY_FILE = REPO_DIR / ".last_activity"
+
+
+def _touch_activity():
+    """Write current timestamp for auto-deploy idle check."""
+    LAST_ACTIVITY_FILE.write_text(str(time.time()))
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 
 # Repo management — which directory claude -p runs in
@@ -89,10 +99,15 @@ def _make_memory_save_hook():
         result = await _run_claude(
             prompt, "sonnet", str(_uuid.uuid4()), resume=False,
         )
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
         if result.startswith("\u26a0\ufe0f"):
             logger.warning(f"Memory save failed: {result[:200]}")
+            msg = build_memory_save_message(success=False, error=result[:100])
         else:
             logger.info("Session memory saved successfully")
+            msg = build_memory_save_message(success=True, qa_count=len(session.qa_log))
+        send_telegram_message(msg, token=token, chat_id=admin_id)
     return hook
 
 
@@ -338,6 +353,64 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 
+async def handle_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dispatch /release and /release confirm."""
+    if not await _check_auth(update):
+        return
+    text = (update.message.text or "").strip()
+    if "confirm" in text.lower():
+        await cmd_release_confirm(update, context)
+    else:
+        await cmd_release(update, context)
+
+
+async def cmd_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run release.py --dry-run and show result. No LLM token cost."""
+    _touch_activity()
+    await update.message.reply_text("🚀 正在檢查 develop → main 差異...")
+
+    try:
+        result = subprocess.run(
+            ["python3", str(REPO_DIR / "release.py"), "--dry-run"],
+            capture_output=True, text=True, timeout=30, cwd=REPO_DIR,
+        )
+        output = result.stdout.strip() or result.stderr.strip() or "No output"
+
+        if "No commits" in output:
+            await update.message.reply_text("沒有新的 commits，不需要 release。")
+            return
+
+        # Show preview and ask for confirmation
+        preview = output[:3000]
+        await update.message.reply_text(
+            f"📋 Release 預覽：\n\n{preview}\n\n"
+            f"確認要開 PR 嗎？輸入 /release confirm"
+        )
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("⚠️ release.py 執行逾時")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ 執行失敗: {e}")
+
+
+async def cmd_release_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Actually create the release PR."""
+    _touch_activity()
+    await update.message.reply_text("🚀 正在建立 PR...")
+
+    try:
+        result = subprocess.run(
+            ["python3", str(REPO_DIR / "release.py")],
+            capture_output=True, text=True, timeout=30, cwd=REPO_DIR,
+        )
+        output = result.stdout.strip() or result.stderr.strip()
+        if result.returncode == 0:
+            await update.message.reply_text(f"✓ PR 已建立！\n{output}")
+        else:
+            await update.message.reply_text(f"⚠️ 失敗:\n{output}")
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ 執行失敗: {e}")
+
+
 async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -392,6 +465,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.from_user.id != ADMIN_ID:
         return
 
+    _touch_activity()
+
     action = query.data
     chat_id = query.message.chat_id
 
@@ -429,6 +504,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
+
+    _touch_activity()
 
     text = update.message.text
     if not text:
@@ -549,6 +626,7 @@ async def post_init(app: Application):
         BotCommand("repo", "切換工作目錄"),
         BotCommand("done", "結束對話並儲存"),
         BotCommand("restart", "重啟 Bot"),
+        BotCommand("release", "開 Release PR（develop→main）"),
     ]
     await app.bot.set_my_commands(commands)
 
@@ -574,6 +652,7 @@ def main():
     app.add_handler(CommandHandler("repo", cmd_repo))
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
+    app.add_handler(CommandHandler("release", handle_release))
     app.add_handler(CommandHandler("course", handle_message))
     app.add_handler(CommandHandler("opus", handle_message))
     app.add_handler(CommandHandler("sonnet", handle_message))
