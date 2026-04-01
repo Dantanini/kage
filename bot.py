@@ -54,7 +54,7 @@ TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 # Repo management — which directory claude -p runs in
 REPOS = {
     "journal": str(Path(os.environ.get("DEV_JOURNAL_PATH", "")) or Path.home() / "dev-journal"),
-    "kage": str(Path.home() / "tg-bot"),
+    "kage": str(Path.home() / "kage"),
     "home": str(Path.home()),
 }
 _current_repo: dict[str, str] = {"name": "journal", "path": REPOS["journal"]}
