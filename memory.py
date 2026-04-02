@@ -5,6 +5,7 @@ Injected into prompts at session start, updated at session end.
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,26 @@ class MemoryStore:
             return content
         except Exception as e:
             logger.warning(f"Failed to read memory: {e}")
+            return ""
+
+    def check_recovery_needed(self, marker_path: Path) -> str:
+        """Check if the previous session ended abnormally.
+
+        If marker file exists, read its mtime, delete it, and return a warning.
+        If not, return empty string.
+        """
+        if not marker_path.exists():
+            return ""
+        try:
+            mtime = datetime.fromtimestamp(marker_path.stat().st_mtime)
+            marker_path.unlink()
+            return (
+                f"[系統提示] 上次對話異常中斷（可能因重啟或當機），"
+                f"時間約 {mtime.strftime('%Y-%m-%d %H:%M')}，"
+                f"最後的對話內容可能未儲存到記憶。請主動告知使用者此狀況。\n\n"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to check recovery marker: {e}")
             return ""
 
     def build_context_prefix(self) -> str:

@@ -65,3 +65,35 @@ class TestMemoryStore:
     def test_memory_dir_created_automatically(self, tmp_path):
         store = MemoryStore(base_dir=str(tmp_path / "nonexistent"))
         assert store.path.parent.exists()
+
+
+class TestRecoveryDetection:
+    """Test abnormal exit detection via .needs_recovery marker."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        return MemoryStore(base_dir=str(tmp_path))
+
+    @pytest.fixture
+    def marker(self, tmp_path):
+        return tmp_path / ".needs_recovery"
+
+    def test_no_marker_returns_empty(self, store, marker):
+        assert store.check_recovery_needed(marker) == ""
+
+    def test_marker_exists_returns_warning(self, store, marker):
+        marker.touch()
+        result = store.check_recovery_needed(marker)
+        assert "異常中斷" in result
+
+    def test_marker_deleted_after_check(self, store, marker):
+        marker.touch()
+        store.check_recovery_needed(marker)
+        assert not marker.exists()
+
+    def test_marker_only_triggers_once(self, store, marker):
+        marker.touch()
+        first = store.check_recovery_needed(marker)
+        second = store.check_recovery_needed(marker)
+        assert "異常中斷" in first
+        assert second == ""
