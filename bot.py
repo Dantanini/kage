@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
@@ -203,8 +204,9 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
         cmd.extend(["--session-id", session_id])
 
     if not resume:
+        recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
         memory_prefix = memory_store.build_context_prefix()
-        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{memory_prefix}\n{prompt}"
+        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -350,6 +352,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
+    # Clean exit — remove recovery marker
+    (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
     os._exit(0)
 
 
@@ -499,6 +503,88 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         for i in range(0, len(result), 4000):
             await context.bot.send_message(chat_id, result[i:i + 4000])
+
+
+
+def build_photo_prompt(image_path: str, caption: str | None) -> str:
+    """Build a prompt that instructs Claude to read and respond to a photo."""
+    effective_caption = caption if caption else "請描述這張圖片"
+    return (
+        f"使用者傳了一張圖片，存在 {image_path}。"
+        f"請先用 Read tool 讀取這張圖片，然後回應使用者的要求：{effective_caption}"
+    )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages — download, build prompt, pass to Claude."""
+    if not await _check_auth(update):
+        return
+
+    _touch_activity()
+    user_id = update.effective_user.id
+
+    # Get the largest photo (last in the array)
+    photo = update.message.photo[-1]
+    caption = update.message.caption or ""
+
+    # Download to temp file
+    file = await context.bot.get_file(photo.file_id)
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir="/tmp") as tmp:
+        await file.download_to_drive(tmp.name)
+        image_path = tmp.name
+
+    prompt = build_photo_prompt(image_path, caption)
+
+    # Use existing session logic
+    model = "sonnet"
+    intent = "chat"
+    session = sessions.get_or_create(user_id, intent, model)
+    resume = not session.is_first_message
+
+    # Use session's current model if already in a session
+    if not session.is_first_message:
+        model = session.model
+
+    hook_errors = await session.run_start_hooks()
+    for err in hook_errors:
+        logger.warning(f"Session start hook: {err}")
+
+    status_msg = await update.message.reply_text(
+        f"🖼️ 圖片分析中 | {model} | 思考中..."
+    )
+
+    async def keep_typing():
+        try:
+            while True:
+                await update.message.chat.send_action("typing")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+
+    typing_task = asyncio.create_task(keep_typing())
+    result = await _run_claude(prompt, model, session.session_id, resume=resume)
+    typing_task.cancel()
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    # Clean up temp file
+    try:
+        os.unlink(image_path)
+    except OSError:
+        pass
+
+    if not result.startswith("⚠️"):
+        session.touch()
+        session.qa_log.append((f"[圖片] {caption or '請描述這張圖片'}", result))
+
+    if len(result) <= 4000:
+        await update.message.reply_text(result)
+    else:
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i + 4000])
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -656,6 +742,7 @@ def main():
     app.add_handler(CommandHandler("course", handle_message))
     app.add_handler(CommandHandler("opus", handle_message))
     app.add_handler(CommandHandler("sonnet", handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(drop_pending_updates=True)

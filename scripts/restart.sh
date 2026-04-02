@@ -12,6 +12,10 @@ pgrep -f "python3 bot.py" | while read pid; do
 done
 
 sleep 1
+
+# Mark that restart was NOT initiated via /restart (no memory save)
+touch "$HOME/kage/.needs_recovery"
+
 systemctl --user restart kage
 sleep 2
 systemctl --user status kage --no-pager | head -5

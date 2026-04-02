@@ -1,8 +1,10 @@
 """Tests for release script — commit parsing and PR content generation."""
 
+from unittest.mock import patch, MagicMock
+
 import pytest
 
-from release import parse_commits, generate_title, generate_body
+from release import parse_commits, generate_title, generate_body, get_commits_between
 
 
 # --- Fixtures ---
@@ -129,3 +131,21 @@ class TestGenerateBody:
         # Should have section headers
         headers = [l for l in lines if l.startswith("##")]
         assert len(headers) >= 2  # at least feat and fix sections
+
+
+class TestGetCommitsBetween:
+    """Ensure get_commits_between uses remote refs after fetch."""
+
+    @patch("release.subprocess.run")
+    def test_uses_origin_refs_by_default(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="abc1234 feat: something\n")
+        get_commits_between()
+        args = mock_run.call_args[0][0]
+        assert "origin/main..origin/develop" in " ".join(args)
+
+    @patch("release.subprocess.run")
+    def test_custom_refs_include_origin_prefix(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="")
+        get_commits_between(base="main", head="release")
+        args = mock_run.call_args[0][0]
+        assert "origin/main..origin/release" in " ".join(args)

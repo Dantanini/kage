@@ -6,6 +6,7 @@
 - 看 log → 執行 `journalctl --user -u kage -f`
 - 停止 bot → 執行 `systemctl --user stop kage`
 - 不要用 nohup / & 手動啟動 bot，一律走 systemd
+- **禁止在對話中直接執行 `restart.sh` 或 `systemctl restart`** — 必須告訴使用者用 `/restart` 指令，這樣 bot 才能先儲存記憶再重啟
 
 ## 開發流程
 
