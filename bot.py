@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import yaml
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -384,11 +384,16 @@ async def cmd_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("沒有新的 commits，不需要 release。")
             return
 
-        # Show preview and ask for confirmation
+        # Show preview with inline confirm/cancel buttons
         preview = output[:3000]
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ 確認開 PR", callback_data="release_confirm"),
+            InlineKeyboardButton("❌ 取消", callback_data="release_cancel"),
+        ]])
         await update.message.reply_text(
             f"📋 Release 預覽：\n\n{preview}\n\n"
-            f"確認要開 PR 嗎？輸入 /release confirm"
+            f"確認要開 PR 嗎？",
+            reply_markup=keyboard,
         )
     except subprocess.TimeoutExpired:
         await update.message.reply_text("⚠️ release.py 執行逾時")
@@ -479,6 +484,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pull_err = await _git_pull(_get_journal_path())
         if pull_err:
             await context.bot.send_message(chat_id, f"⚠️ {pull_err}\n繼續執行...")
+
+    if action == "release_confirm":
+        await query.edit_message_text("🚀 正在建立 PR...")
+        try:
+            res = subprocess.run(
+                ["python3", str(REPO_DIR / "release.py")],
+                capture_output=True, text=True, timeout=30, cwd=REPO_DIR,
+            )
+            output = res.stdout.strip() or res.stderr.strip()
+            if res.returncode == 0:
+                await query.edit_message_text(f"✓ PR 已建立！\n{output}")
+            else:
+                await query.edit_message_text(f"⚠️ 失敗:\n{output}")
+        except Exception as e:
+            await query.edit_message_text(f"⚠️ 執行失敗: {e}")
+        return
+
+    if action == "release_cancel":
+        await query.edit_message_text("❌ Release 已取消。")
+        return
 
     if action == "morning":
         status_msg = await context.bot.send_message(chat_id, "🌅 正在整理今日主線（分步執行中）...")
