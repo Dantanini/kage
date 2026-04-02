@@ -506,6 +506,94 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+def is_supported_document(filename: str | None) -> bool:
+    """Check if a document file type is supported (PDF only for now)."""
+    if not filename:
+        return False
+    return filename.lower().endswith(".pdf")
+
+
+def build_document_prompt(file_path: str, filename: str, caption: str | None) -> str:
+    """Build a prompt that instructs Claude to read and respond to a document."""
+    effective_caption = caption if caption else f"請閱讀並摘要這份文件：{filename}"
+    return (
+        f"使用者傳了一份文件 {filename}，存在 {file_path}。"
+        f"請先用 Read tool 讀取這份文件，然後回應使用者的要求：{effective_caption}"
+    )
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle document messages — download PDF, build prompt, pass to Claude."""
+    if not await _check_auth(update):
+        return
+
+    filename = update.message.document.file_name
+    if not is_supported_document(filename):
+        await update.message.reply_text("⚠️ 目前只支援 PDF 文件")
+        return
+
+    _touch_activity()
+    user_id = update.effective_user.id
+    caption = update.message.caption or ""
+
+    # Download to temp file preserving extension
+    file = await context.bot.get_file(update.message.document.file_id)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False, dir="/tmp") as tmp:
+        await file.download_to_drive(tmp.name)
+        doc_path = tmp.name
+
+    prompt = build_document_prompt(doc_path, filename, caption)
+
+    model = "sonnet"
+    intent = "chat"
+    session = sessions.get_or_create(user_id, intent, model)
+    resume = not session.is_first_message
+
+    if not session.is_first_message:
+        model = session.model
+
+    hook_errors = await session.run_start_hooks()
+    for err in hook_errors:
+        logger.warning(f"Session start hook: {err}")
+
+    status_msg = await update.message.reply_text(
+        f"📄 文件分析中 | {model} | 思考中..."
+    )
+
+    async def keep_typing():
+        try:
+            while True:
+                await update.message.chat.send_action("typing")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+
+    typing_task = asyncio.create_task(keep_typing())
+    result = await _run_claude(prompt, model, session.session_id, resume=resume)
+    typing_task.cancel()
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    # Clean up temp file
+    try:
+        os.unlink(doc_path)
+    except OSError:
+        pass
+
+    if not result.startswith("⚠️"):
+        session.touch()
+        session.qa_log.append((f"[文件] {filename}: {caption or '請摘要'}", result))
+
+    if len(result) <= 4000:
+        await update.message.reply_text(result)
+    else:
+        for i in range(0, len(result), 4000):
+            await context.bot.send_message(update.effective_chat.id, result[i:i + 4000])
+
+
 def build_photo_prompt(image_path: str, caption: str | None) -> str:
     """Build a prompt that instructs Claude to read and respond to a photo."""
     effective_caption = caption if caption else "請描述這張圖片"
@@ -743,6 +831,7 @@ def main():
     app.add_handler(CommandHandler("opus", handle_message))
     app.add_handler(CommandHandler("sonnet", handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(drop_pending_updates=True)
