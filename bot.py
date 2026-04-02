@@ -203,8 +203,9 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
         cmd.extend(["--session-id", session_id])
 
     if not resume:
+        recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
         memory_prefix = memory_store.build_context_prefix()
-        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{memory_prefix}\n{prompt}"
+        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
