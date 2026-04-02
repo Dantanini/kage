@@ -7,6 +7,39 @@
 - 停止 bot → 執行 `systemctl --user stop kage`
 - 不要用 nohup / & 手動啟動 bot，一律走 systemd
 
+## 分支策略
+
+採用 GitHub Flow + develop 分支，適合 solo/小團隊且需要 staging 的專案。
+
+```
+feature/* or fix/*  →  PR to develop  →  /release  →  PR to main
+```
+
+### 規則
+
+- `main`：production，只接受從 `develop` 來的 PR（透過 release.py）
+- `develop`：staging，接受所有 feature/fix PR
+- **開 PR 一律 base `develop`，禁止直接開到 `main`**
+- 新功能分支從 `develop` 切出：`git checkout -b feat/xxx develop`
+- 修復分支從 `develop` 切出：`git checkout -b fix/xxx develop`
+- Release 流程由使用者手動呼叫 `/release`，不要自己執行 release.py
+- 合併後的 feature/fix 分支由使用者決定是否刪除
+
+### 分支前綴
+
+| 前綴 | 用途 |
+|---|---|
+| `feat/` | 新功能 |
+| `fix/` | Bug 修復 |
+| `refactor/` | 重構（不改變行為） |
+| `chore/` | 工具、CI、依賴更新等 |
+
+小改動（docs 更新、typo 修正）不需要開分支，直接在 `develop` commit。
+
+### 為什麼不用完整 Git Flow
+
+Solo 專案不需要 `release/*`、`hotfix/*`。多一層分支 = 多一層出錯機會，沒有對應的收益。
+
 ## 開發流程
 
 - **TDD 優先**：新增功能或修改核心邏輯時，先寫 test case 再實作。不接受先寫功能後補 test。
