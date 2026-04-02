@@ -79,6 +79,7 @@ python3 bot.py
 | `/morning` | Daily priorities summary (Opus) |
 | `/evening` | Daily wrap-up + commit (Opus) |
 | `/done` | End session, trigger save flow |
+| `/release` | Release PR preview (develop→main) with inline confirm button |
 | `/restart` | Restart bot remotely |
 
 Just type naturally for conversation — defaults to Sonnet.
@@ -112,7 +113,7 @@ kage/
 ├── scripts/
 │   ├── restart.sh      ← Safe bot restart (kills rogue processes)
 │   └── notify.py       ← Cron notification with inline buttons
-├── tests/              ← pytest test suite (49 tests)
+├── tests/              ← pytest test suite (117 tests)
 ├── .github/workflows/  ← GitHub Actions CI
 ├── .claude/
 │   └── CLAUDE.md       ← Operational rules for developers
