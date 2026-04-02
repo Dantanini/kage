@@ -97,3 +97,16 @@ class TestRecoveryDetection:
         second = store.check_recovery_needed(marker)
         assert "異常中斷" in first
         assert second == ""
+
+    def test_warning_starts_with_system_tag(self, store, marker):
+        marker.touch()
+        result = store.check_recovery_needed(marker)
+        assert result.startswith("[系統提示]")
+
+    def test_exception_during_processing_returns_empty(self, store, marker):
+        """If unlink fails (e.g. permission denied), catch and return empty."""
+        marker.touch()
+        from unittest.mock import patch
+        with patch.object(type(marker), "unlink", side_effect=PermissionError("denied")):
+            result = store.check_recovery_needed(marker)
+        assert result == ""
