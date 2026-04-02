@@ -142,9 +142,12 @@ def generate_body(commits: list[dict]) -> str:
 
 
 def get_commits_between(base: str = "main", head: str = "develop") -> str:
-    """Get git log --oneline between two branches."""
+    """Get git log --oneline between two remote branches.
+
+    Uses origin/ prefix to compare remote refs (requires git fetch first).
+    """
     result = subprocess.run(
-        ["git", "log", "--oneline", f"{base}..{head}"],
+        ["git", "log", "--oneline", f"origin/{base}..origin/{head}"],
         capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
