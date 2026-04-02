@@ -5,3 +5,4 @@ __pycache__/
 .last_activity
 .deploy_attempt
 logs/
+.needs_recovery

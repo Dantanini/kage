@@ -350,6 +350,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
+    # Clean exit — remove recovery marker
+    (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
     os._exit(0)
 
 
