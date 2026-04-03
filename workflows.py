@@ -80,9 +80,22 @@ def build_evening_steps(today: str | None = None) -> list[WorkflowStep]:
             include_previous=False,
         ),
         WorkflowStep(
-            name="update_and_commit",
+            name="update_memory_and_readme",
             prompt=(
-                f"根據以上摘要：\n"
+                f"根據以上摘要和今天的對話，執行以下檢查和更新：\n"
+                f"1. 更新 memory/kage-memory/ 底下的檔案（如果有新的 lessons、task 進度變化）\n"
+                f"2. 檢查對使用者有沒有新的觀察或評估值得記錄\n"
+                f"3. 檢查 ~/kage/README.md 是否跟現有功能一致（指令表、test 數量、架構描述）\n"
+                f"4. 檢查 dev-journal 的 README.md 是否需要更新\n"
+                f"只回報需要更新的項目和你做了什麼改動（不超過 200 字），沒有需要更新的就說「記憶和 README 皆為最新」。"
+            ),
+            model="sonnet",
+            include_previous=True,
+        ),
+        WorkflowStep(
+            name="update_daily_and_commit",
+            prompt=(
+                f"根據以上所有資訊：\n"
                 f"1. 更新或建立 daily/{today}.md\n"
                 f"2. 更新 learning/INDEX.md（如果有變動）\n"
                 f"3. 執行 python3 scripts/validate.py\n"
