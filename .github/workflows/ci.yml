@@ -23,5 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug scripts directory
+        run: |
+          echo "=== ls scripts/ ==="
+          ls -la scripts/
+          echo "=== file scripts/task_done.py ==="
+          file scripts/task_done.py || echo "FILE NOT FOUND"
+          echo "=== pwd ==="
+          pwd
+
       - name: Run tests
         run: pytest tests/ -v --tb=short
