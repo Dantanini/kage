@@ -33,13 +33,19 @@ class TestWorkflowSteps:
         assert steps[-1].include_previous is True
         assert steps[0].include_previous is False
 
-    def test_evening_has_two_steps(self):
+    def test_evening_has_three_steps(self):
         steps = build_evening_steps("2026-04-01")
-        assert len(steps) == 2
+        assert len(steps) == 3
 
     def test_evening_includes_date(self):
         steps = build_evening_steps("2026-04-01")
         assert "2026-04-01" in steps[0].prompt
+
+    def test_evening_includes_memory_and_readme_check(self):
+        steps = build_evening_steps("2026-04-01")
+        memory_step = steps[1]
+        assert "memory" in memory_step.prompt.lower() or "記憶" in memory_step.prompt
+        assert "README" in memory_step.prompt
 
 
 class TestRunWorkflow:

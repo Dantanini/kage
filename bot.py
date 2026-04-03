@@ -284,14 +284,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
     await update.message.reply_text(
-        "🤖 AI 助手已就緒\n\n"
-        "直接打字就能對話（預設 Sonnet）\n\n"
-        "切換模式：\n"
-        "/course — 課程學習（Opus）\n"
-        "/opus — 切換到 Opus（深度思考）\n"
-        "/sonnet — 切回 Sonnet\n"
-        "/done — 結束並儲存\n"
-        "/restart — 重啟 Bot"
+        "🤖 AI 助手已就緒（直接打字就能對話）\n\n"
+        "💡 常用情境：\n"
+        "/deep — 聊到一半需要深度思考\n"
+        "/plan — 規劃工作（記錄→拆計畫→實作）\n"
+        "/course — 開始學習\n\n"
+        "📋 日常：\n"
+        "/morning — 今天該做什麼\n"
+        "/evening — 日結存檔（記憶+daily+README）\n"
+        "/done — 結束對話並儲存\n\n"
+        "⚙️ 切換：\n"
+        "/opus — 整段切 Opus  /sonnet — 切回\n"
+        "/repo — 切工作目錄  /restart — 重啟"
     )
 
 
@@ -1087,18 +1091,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(app: Application):
     """Set bot commands menu."""
     commands = [
-        BotCommand("start", "啟動助手"),
-        BotCommand("course", "課程學習（Opus）"),
-        BotCommand("opus", "切換 Opus"),
-        BotCommand("sonnet", "切換 Sonnet"),
-        BotCommand("morning", "今日主線摘要"),
-        BotCommand("evening", "今日日結"),
-        BotCommand("repo", "切換工作目錄"),
-        BotCommand("done", "結束對話並儲存"),
-        BotCommand("restart", "重啟 Bot"),
-        BotCommand("plan", "查看/建立下次 session 計畫"),
-        BotCommand("deep", "切換 Opus（保留對話脈絡）"),
-        BotCommand("release", "開 Release PR（develop→main）"),
+        BotCommand("start", "顯示指令列表"),
+        BotCommand("deep", "聊到一半需要深度思考→切 Opus 不斷對話"),
+        BotCommand("plan", "規劃工作：記錄想法→Opus 拆計畫→Sonnet 實作"),
+        BotCommand("course", "學習模式：Opus 帶你讀課程和做練習"),
+        BotCommand("opus", "整段對話切 Opus（開新 session）"),
+        BotCommand("sonnet", "切回 Sonnet（日常對話）"),
+        BotCommand("morning", "今天該做什麼？讀主線+近況給建議"),
+        BotCommand("evening", "日結：更新記憶/daily/README + commit"),
+        BotCommand("done", "結束對話並儲存筆記"),
+        BotCommand("repo", "切工作目錄：journal / kage / home"),
+        BotCommand("release", "kage 發版：preview diff → 開 PR"),
+        BotCommand("restart", "拉最新 code + 重啟 Bot"),
     ]
     await app.bot.set_my_commands(commands)
 
