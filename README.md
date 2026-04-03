@@ -78,6 +78,9 @@ python3 bot.py
 | `/repo home` | Switch to home directory |
 | `/morning` | Daily priorities summary (Opus) |
 | `/evening` | Daily wrap-up + commit (Opus) |
+| `/plan <text>` | Save next session plan (auto-injected at start) |
+| `/plan + <text>` | Append to existing plan |
+| `/plan` | View current plan |
 | `/done` | End session, trigger save flow |
 | `/release` | Release PR preview (develop→main) with inline confirm button |
 | `/restart` | Restart bot remotely |
@@ -108,12 +111,13 @@ kage/
 ├── router.py           ← Command routing (no LLM, pure Python)
 ├── session.py          ← Session lifecycle management + hooks
 ├── memory.py           ← Persistent memory layer (reads/writes dev-journal)
+├── plan.py             ← Session plan store (write during fragmented time, consume at next session)
 ├── workflows.py        ← Code-defined multi-step workflow chains
 ├── config.yaml         ← Session timeout settings
 ├── scripts/
 │   ├── restart.sh      ← Safe bot restart (kills rogue processes)
 │   └── notify.py       ← Cron notification with inline buttons
-├── tests/              ← pytest test suite (117 tests)
+├── tests/              ← pytest test suite (132 tests)
 ├── .github/workflows/  ← GitHub Actions CI
 ├── .claude/
 │   └── CLAUDE.md       ← Operational rules for developers
@@ -130,6 +134,7 @@ kage/
 - **LLM for reasoning** — content writing, learning, deep discussion
 - **Expandable** — add repos, add Skills, no bot refactoring needed
 - **Persistent memory** — auto-saves conversation context to dev-journal, injected into next session
+- **Session planning** — `/plan` during fragmented time, auto-injected and consumed at next core session
 - **Code-defined workflows** — multi-step chains with per-step model selection (sonnet for gathering, opus for synthesis)
 
 ## License
