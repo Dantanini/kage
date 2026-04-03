@@ -2,11 +2,12 @@
 
 Reads/writes structured memory files that persist across sessions.
 Supports both legacy single-file and new structured directory format.
+Includes event-driven MemoryWriter for immediate writes on important events.
 """
 
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -155,3 +156,73 @@ class MemoryStore:
             f"4. 不要記流水帳，只記對未來對話有用的資訊\n\n"
             f"{log_text}"
         )
+
+
+class MemoryWriter:
+    """Event-driven writer for immediate memory updates.
+
+    Writes directly to structured memory files without going through Claude.
+    Designed to work alongside the debounce-based save mechanism.
+    """
+
+    def __init__(self, store: MemoryStore):
+        self._store = store
+
+    def _get_file(self, name: str) -> Path | None:
+        """Get a structured memory file path. Returns None if dir doesn't exist."""
+        d = self._store.structured_dir
+        if not d.is_dir():
+            return None
+        return d / name
+
+    def _update_frontmatter_date(self, path: Path) -> None:
+        """Update the 'updated' field in YAML frontmatter to today."""
+        content = path.read_text(encoding="utf-8")
+        today = date.today().isoformat()
+        content = re.sub(
+            r"^(updated:\s*)\d{4}-\d{2}-\d{2}",
+            rf"\g<1>{today}",
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        path.write_text(content, encoding="utf-8")
+
+    def write_lesson(self, lesson: str) -> None:
+        """Append a lesson to lessons-learned.md."""
+        path = self._get_file("lessons-learned.md")
+        if not path or not path.exists():
+            return
+        content = path.read_text(encoding="utf-8")
+        content = content.rstrip() + f"\n- {lesson}\n"
+        path.write_text(content, encoding="utf-8")
+        self._update_frontmatter_date(path)
+
+    def write_task_update(self, update: str) -> None:
+        """Append a task update to active-tasks.md."""
+        path = self._get_file("active-tasks.md")
+        if not path or not path.exists():
+            return
+        content = path.read_text(encoding="utf-8")
+        content = content.rstrip() + f"\n- {update}\n"
+        path.write_text(content, encoding="utf-8")
+        self._update_frontmatter_date(path)
+
+    def write_session_summary(self, summary: str) -> None:
+        """Append a session summary to session-log.md under today's date header."""
+        path = self._get_file("session-log.md")
+        if not path or not path.exists():
+            return
+        content = path.read_text(encoding="utf-8")
+        today = date.today().isoformat()
+        header = f"## {today}"
+
+        if header in content:
+            # Append under existing date section
+            content = content.rstrip() + f"\n- {summary}\n"
+        else:
+            # Add new date section
+            content = content.rstrip() + f"\n\n{header}\n\n- {summary}\n"
+
+        path.write_text(content, encoding="utf-8")
+        self._update_frontmatter_date(path)
