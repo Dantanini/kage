@@ -353,6 +353,19 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💾 先儲存記憶再重啟...")
         await sessions.close(user_id)
 
+    # Pull both repos before restart
+    await update.message.reply_text("📥 正在拉取最新程式碼...")
+    pull_errors = []
+    for name, path in [("kage", str(REPO_DIR)), ("journal", REPOS["journal"])]:
+        err = await _git_pull(path)
+        if err:
+            pull_errors.append(f"{name}: {err}")
+
+    if pull_errors:
+        await update.message.reply_text(
+            "⚠️ Git pull 失敗（重啟仍會繼續）：\n" + "\n".join(pull_errors)
+        )
+
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
     # Clean exit — remove recovery marker
