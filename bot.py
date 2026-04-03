@@ -456,6 +456,13 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 
+def _plan_recorded_keyboard() -> InlineKeyboardMarkup:
+    """Return keyboard with '▶️ 開始計畫' button shown after plan is recorded."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("▶️ 開始計畫", callback_data="plan_start"),
+    ]])
+
+
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Plan menu. /plan = show buttons, /plan <text> = record intent."""
     if not await _check_auth(update):
@@ -487,7 +494,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Has text → record plan intent
     plan_store.write(body)
-    await update.message.reply_text("✅ 計畫已記錄")
+    await update.message.reply_text("✅ 計畫已記錄", reply_markup=_plan_recorded_keyboard())
 
 
 async def handle_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -680,6 +687,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"---\ntitle: Implementation Plan\ntags: [system, active]\nupdated: {today}\n---\n\n{result}\n",
                 encoding="utf-8",
             )
+            # Keep session in opus so follow-up questions stay in opus
+            user_id = query.from_user.id
+            sess = sessions.get_or_create(user_id, "plan", "opus")
+            sess.model = "opus"
             preview = result[:3000]
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ 確認並開始實作", callback_data="plan_confirm_impl"),
@@ -691,16 +702,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     elif action == "plan_confirm_impl":
         await query.edit_message_text("🔨 開始實作...")
+        # Switch back to sonnet for implementation
+        user_id = query.from_user.id
+        sess = sessions.get_or_create(user_id, "impl", "sonnet")
+        sess.model = "sonnet"
         await _run_plan_impl(chat_id, context)
         return
     elif action == "plan_confirm_later":
-        await query.edit_message_text("📌 計畫已確認，稍後用 /plan → 實作 開始執行。")
+        await query.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_message(chat_id, "📌 計畫已確認，稍後用 /plan → 實作 開始執行。")
         return
     elif action == "plan_merge_overwrite":
         new_text = _pending_plan_conflict.pop(chat_id, "")
         if new_text:
             plan_store.write(new_text)
-            await query.edit_message_text("✅ 計畫已覆蓋")
+            await query.edit_message_text("✅ 計畫已覆蓋", reply_markup=_plan_recorded_keyboard())
         else:
             await query.edit_message_text("⚠️ 找不到待覆蓋內容")
         return
@@ -708,7 +724,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_text = _pending_plan_conflict.pop(chat_id, "")
         if new_text:
             plan_store.append(new_text)
-            await query.edit_message_text("✅ 已追加到計畫")
+            await query.edit_message_text("✅ 已追加到計畫", reply_markup=_plan_recorded_keyboard())
         else:
             await query.edit_message_text("⚠️ 找不到待追加內容")
         return
@@ -987,7 +1003,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         existing = plan_store.read()
         if not existing:
             plan_store.write(text)
-            await update.message.reply_text("✅ 計畫已記錄")
+            await update.message.reply_text("✅ 計畫已記錄", reply_markup=_plan_recorded_keyboard())
         else:
             import uuid as _uuid
             merge_prompt = (
@@ -1005,7 +1021,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if result.startswith("APPEND"):
                 merged = result[len("APPEND"):].strip()
                 plan_store.write(merged)
-                await update.message.reply_text("✅ 已追加到現有計畫")
+                await update.message.reply_text("✅ 已追加到現有計畫", reply_markup=_plan_recorded_keyboard())
             elif result.startswith("CONFLICT"):
                 reason = result[len("CONFLICT"):].strip()
                 _pending_plan_conflict[chat_id] = text
@@ -1021,10 +1037,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif result.startswith("OVERWRITE"):
                 new_content = result[len("OVERWRITE"):].strip()
                 plan_store.write(new_content)
-                await update.message.reply_text("✅ 計畫已覆蓋")
+                await update.message.reply_text("✅ 計畫已覆蓋", reply_markup=_plan_recorded_keyboard())
             else:
                 plan_store.append(text)
-                await update.message.reply_text("✅ 已追加到計畫")
+                await update.message.reply_text("✅ 已追加到計畫", reply_markup=_plan_recorded_keyboard())
 
         return
 
