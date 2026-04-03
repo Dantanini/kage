@@ -1,19 +1,21 @@
 """Tests for scripts/task_done.py — branch completion notification."""
 
+import types
 from unittest.mock import patch, MagicMock
-import importlib.util
 from pathlib import Path
 
 import pytest
 
-SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "task_done.py"
+SCRIPT_PATH = (Path(__file__).parent.parent / "scripts" / "task_done.py").resolve()
 
 
 def _load_task_done():
-    """Load task_done module from scripts/ without polluting sys.path."""
-    spec = importlib.util.spec_from_file_location("task_done", SCRIPT_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """Load task_done module from scripts/ via open()+exec(), bypassing importlib."""
+    mod = types.ModuleType("task_done")
+    mod.__file__ = str(SCRIPT_PATH)
+    with open(SCRIPT_PATH) as f:
+        code = compile(f.read(), str(SCRIPT_PATH), "exec")
+    exec(code, mod.__dict__)
     return mod
 
 
