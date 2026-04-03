@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 
 from memory import MemoryStore
+from plan import PlanStore
 from router import route
 from session import SessionManager
 from tg_notify import build_memory_save_message, send_telegram_message
@@ -75,6 +76,7 @@ sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
 
 # Persistent memory
 memory_store = MemoryStore(base_dir=REPOS["journal"])
+plan_store = PlanStore(base_dir=REPOS["journal"])
 
 
 # --- Session hooks ---
@@ -206,7 +208,8 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     if not resume:
         recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
         memory_prefix = memory_store.build_context_prefix()
-        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}\n{prompt}"
+        plan_prefix = plan_store.build_context_injection()
+        prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}{plan_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -352,11 +355,53 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💾 先儲存記憶再重啟...")
         await sessions.close(user_id)
 
+    # Pull both repos before restart
+    await update.message.reply_text("📥 正在拉取最新程式碼...")
+    pull_errors = []
+    for name, path in [("kage", str(REPO_DIR)), ("journal", REPOS["journal"])]:
+        err = await _git_pull(path)
+        if err:
+            pull_errors.append(f"{name}: {err}")
+
+    if pull_errors:
+        await update.message.reply_text(
+            "⚠️ Git pull 失敗（重啟仍會繼續）：\n" + "\n".join(pull_errors)
+        )
+
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
     # Clean exit — remove recovery marker
     (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
     os._exit(0)
+
+
+async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Write or view session plan. /plan = view, /plan <text> = write, /plan + = append."""
+    if not await _check_auth(update):
+        return
+
+    text = (update.message.text or "").strip()
+    # Strip /plan prefix
+    args = text.split(None, 1)
+    body = args[1] if len(args) > 1 else ""
+
+    if not body:
+        # View current plan
+        content = plan_store.read()
+        if content:
+            await update.message.reply_text(f"📋 目前計畫：\n\n{content}")
+        else:
+            await update.message.reply_text("沒有待執行的計畫。用 /plan <內容> 建立。")
+        return
+
+    if body.startswith("+"):
+        # Append mode
+        plan_store.append(body[1:].strip())
+        await update.message.reply_text("✅ 已追加到計畫")
+    else:
+        # Overwrite
+        plan_store.write(body)
+        await update.message.reply_text("✅ 計畫已儲存，下次 session 會自動載入")
 
 
 async def handle_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -799,6 +844,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not result.startswith("⚠️"):
         session.touch()
         session.qa_log.append((prompt, result))
+        # Consume plan only after successful first message
+        if plan_store.has_plan() and not resume:
+            plan_store.consume()
 
         # Auto-flush if log is too large
         if session.qa_log_size() >= QA_LOG_FLUSH_SIZE:
@@ -819,6 +867,8 @@ async def post_init(app: Application):
     """Set bot commands menu."""
     commands = [
         BotCommand("start", "顯示指令列表"),
+        BotCommand("deep", "聊到一半需要深度思考→切 Opus 不斷對話"),
+        BotCommand("plan", "規劃工作：記錄想法→Opus 拆計畫→Sonnet 實作"),
         BotCommand("course", "學習模式：Opus 帶你讀課程和做練習"),
         BotCommand("opus", "整段對話切 Opus（開新 session）"),
         BotCommand("sonnet", "切回 Sonnet（日常對話）"),
@@ -853,6 +903,7 @@ def main():
     app.add_handler(CommandHandler("repo", cmd_repo))
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
+    app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("release", handle_release))
     app.add_handler(CommandHandler("course", handle_message))
     app.add_handler(CommandHandler("opus", handle_message))
