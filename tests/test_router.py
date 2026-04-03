@@ -28,6 +28,7 @@ class TestCommandRouting:
             ("/morning", "opus", "morning"),
             ("/evening", "opus", "evening"),
             ("/course", "opus", "course"),
+            ("/deep", "opus", "chat"),
             ("/opus", "opus", "chat"),
             ("/sonnet", "sonnet", "chat"),
             ("/note", "sonnet", "note"),
