@@ -6,3 +6,5 @@ __pycache__/
 .deploy_attempt
 logs/
 .needs_recovery
+.local/
+.worktrees/
