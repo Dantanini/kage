@@ -209,8 +209,6 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
         recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
         memory_prefix = memory_store.build_context_prefix()
         plan_prefix = plan_store.build_context_injection()
-        if plan_prefix:
-            plan_store.consume()  # Clear after injection
         prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}{plan_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
@@ -831,6 +829,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not result.startswith("⚠️"):
         session.touch()
         session.qa_log.append((prompt, result))
+        # Consume plan only after successful first message
+        if plan_store.has_plan() and not resume:
+            plan_store.consume()
 
         # Auto-flush if log is too large
         if session.qa_log_size() >= QA_LOG_FLUSH_SIZE:
