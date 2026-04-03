@@ -1,46 +1,90 @@
 """Persistent memory layer — inspired by Claude Code's memdir system.
 
-Reads/writes a markdown memory file that persists across sessions.
-Injected into prompts at session start, updated at session end.
+Reads/writes structured memory files that persist across sessions.
+Supports both legacy single-file and new structured directory format.
 """
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MEMORY_FILENAME = "kage-memory.md"
+DEFAULT_MEMORY_DIRNAME = "kage-memory"
 MEMORY_INJECT_LIMIT = 2000  # chars to inject into prompt
+
+# Structured memory files in priority order for reading
+STRUCTURED_FILES = ["active-tasks.md", "lessons-learned.md", "session-log.md"]
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter from markdown content."""
+    if not text.startswith("---"):
+        return text
+    parts = text.split("---", 2)
+    if len(parts) >= 3:
+        return parts[2].strip()
+    return text
 
 
 class MemoryStore:
-    """Simple file-backed memory store using a markdown file."""
+    """File-backed memory store supporting structured directory or single file."""
 
     def __init__(self, base_dir: str, filename: str = DEFAULT_MEMORY_FILENAME):
-        self._path = Path(base_dir) / "memory" / filename
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._base = Path(base_dir) / "memory"
+        self._base.mkdir(parents=True, exist_ok=True)
+        self._single_path = self._base / filename
+        self._dir_path = self._base / DEFAULT_MEMORY_DIRNAME
 
     @property
     def path(self) -> Path:
-        return self._path
+        """Legacy property — returns single file path for backward compat."""
+        return self._single_path
+
+    @property
+    def structured_dir(self) -> Path:
+        return self._dir_path
+
+    def _use_structured(self) -> bool:
+        """Check if structured directory exists and has files."""
+        return self._dir_path.is_dir() and any(self._dir_path.glob("*.md"))
 
     def exists(self) -> bool:
-        return self._path.exists()
+        return self._use_structured() or self._single_path.exists()
 
     def read(self, limit: int = MEMORY_INJECT_LIMIT) -> str:
-        """Read memory content, truncated to limit chars."""
-        if not self._path.exists():
-            return ""
+        """Read memory content from structured dir or single file."""
         try:
-            content = self._path.read_text(encoding="utf-8").strip()
+            if self._use_structured():
+                content = self._read_structured()
+            elif self._single_path.exists():
+                content = self._single_path.read_text(encoding="utf-8").strip()
+            else:
+                return ""
+
             if len(content) > limit:
-                # Truncate from beginning, keep recent memories
                 content = "...(truncated)...\n" + content[-limit:]
             return content
         except Exception as e:
             logger.warning(f"Failed to read memory: {e}")
             return ""
+
+    def _read_structured(self) -> str:
+        """Read and merge all structured memory files, stripping frontmatter."""
+        parts = []
+        for fname in STRUCTURED_FILES:
+            fpath = self._dir_path / fname
+            if fpath.exists():
+                raw = fpath.read_text(encoding="utf-8").strip()
+                parts.append(_strip_frontmatter(raw))
+        # Also read any extra .md files not in the standard list
+        for fpath in sorted(self._dir_path.glob("*.md")):
+            if fpath.name not in STRUCTURED_FILES:
+                raw = fpath.read_text(encoding="utf-8").strip()
+                parts.append(_strip_frontmatter(raw))
+        return "\n\n".join(parts)
 
     def check_recovery_needed(self, marker_path: Path) -> str:
         """Check if the previous session ended abnormally.
@@ -70,7 +114,7 @@ class MemoryStore:
         return f"[持久記憶 — 來自過去對話的重要脈絡]\n{content}\n[/持久記憶]\n\n"
 
     def build_save_prompt(self, qa_pairs: list[tuple[str, str]], max_pairs: int = 5) -> str:
-        """Build a prompt that asks Claude to update the memory file.
+        """Build a prompt that asks Claude to update the memory files.
 
         Args:
             qa_pairs: Recent (question, answer) pairs from the session.
@@ -84,8 +128,26 @@ class MemoryStore:
             f"**問：** {q[:300]}\n**答：** {a[:300]}" for q, a in recent
         )
 
+        if self._use_structured():
+            session_log = self._dir_path / "session-log.md"
+            active_tasks = self._dir_path / "active-tasks.md"
+            lessons = self._dir_path / "lessons-learned.md"
+            return (
+                f"以下是這次對話的近期問答摘要。請更新結構化記憶檔案：\n\n"
+                f"1. **Session 摘要** → 讀取並更新 `{session_log}`\n"
+                f"   - 用 `## YYYY-MM-DD` 作為段落標題，追加今天的 session 摘要\n"
+                f"   - 如果超過 100 行，刪除最舊的段落\n"
+                f"2. **待辦更新** → 讀取並更新 `{active_tasks}`\n"
+                f"   - 更新 PR 狀態、新增/移除待辦項目\n"
+                f"3. **教訓記錄** → 讀取並更新 `{lessons}`\n"
+                f"   - 如果這次對話有新的操作教訓或工作流程修正，追加到檔案\n"
+                f"4. 不要記流水帳，只記對未來對話有用的資訊\n"
+                f"5. 每個檔案都有 YAML frontmatter，更新 `updated` 日期\n\n"
+                f"{log_text}"
+            )
+
         return (
-            f"以下是這次對話的近期問答摘要。請讀取 {self._path} "
+            f"以下是這次對話的近期問答摘要。請讀取 {self._single_path} "
             f"（如不存在請建立），然後：\n"
             f"1. 從這次對話中提取值得長期記住的關鍵資訊（決策、偏好、進度、問題）\n"
             f"2. 追加到檔案末尾，用 `## YYYY-MM-DD` 作為段落標題\n"
