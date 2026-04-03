@@ -80,7 +80,7 @@ python3 bot.py
 | `/evening` | Daily wrap-up + commit (Opus) |
 | `/done` | End session, trigger save flow |
 | `/release` | Release PR preview (develop→main) with inline confirm button |
-| `/restart` | Restart bot remotely |
+| `/restart` | Pull latest code (kage + journal), save memory, restart bot |
 
 Just type naturally for conversation — defaults to Sonnet.
 
