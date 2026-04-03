@@ -1,4 +1,9 @@
-"""Tests for scripts/task_done.py — branch completion notification."""
+"""Tests for scripts/task_done.py — branch completion notification.
+
+NOTE: Source is cached at collection time to survive other tests
+that may alter the git working tree (e.g. test_restart_pull doing
+git checkout main deletes files only on develop).
+"""
 
 import types
 from unittest.mock import patch, MagicMock
@@ -8,13 +13,26 @@ import pytest
 
 SCRIPT_PATH = (Path(__file__).parent.parent / "scripts" / "task_done.py").resolve()
 
+# Cache source at import/collection time — before other tests can change the tree
+_SOURCE_CACHE: str | None = None
+
+
+def _read_source() -> str:
+    global _SOURCE_CACHE
+    if _SOURCE_CACHE is None:
+        _SOURCE_CACHE = SCRIPT_PATH.read_text()
+    return _SOURCE_CACHE
+
+
+# Eagerly read source at collection time
+_read_source()
+
 
 def _load_task_done():
-    """Load task_done module from scripts/ via open()+exec(), bypassing importlib."""
+    """Load task_done module from cached source, bypassing filesystem."""
     mod = types.ModuleType("task_done")
     mod.__file__ = str(SCRIPT_PATH)
-    with open(SCRIPT_PATH) as f:
-        code = compile(f.read(), str(SCRIPT_PATH), "exec")
+    code = compile(_read_source(), str(SCRIPT_PATH), "exec")
     exec(code, mod.__dict__)
     return mod
 
