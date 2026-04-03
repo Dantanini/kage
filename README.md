@@ -78,9 +78,10 @@ python3 bot.py
 | `/repo home` | Switch to home directory |
 | `/morning` | Daily priorities summary (Opus) |
 | `/evening` | Daily wrap-up + commit (Opus) |
-| `/plan <text>` | Save next session plan (auto-injected at start) |
-| `/plan + <text>` | Append to existing plan |
-| `/plan` | View current plan |
+| `/plan` | Plan menu with inline buttons (record, start plan, implement, view) |
+| `/plan <text>` | Record plan intent (smart merge if plan exists) |
+| `/deep` | Switch to Opus mid-session (preserves conversation context) |
+| `/deep <text>` | Switch to Opus and send text immediately |
 | `/done` | End session, trigger save flow |
 | `/release` | Release PR preview (develop→main) with inline confirm button |
 | `/restart` | Restart bot remotely |
@@ -117,7 +118,7 @@ kage/
 ├── scripts/
 │   ├── restart.sh      ← Safe bot restart (kills rogue processes)
 │   └── notify.py       ← Cron notification with inline buttons
-├── tests/              ← pytest test suite (132 tests)
+├── tests/              ← pytest test suite (151 tests)
 ├── .github/workflows/  ← GitHub Actions CI
 ├── .claude/
 │   └── CLAUDE.md       ← Operational rules for developers
@@ -134,7 +135,8 @@ kage/
 - **LLM for reasoning** — content writing, learning, deep discussion
 - **Expandable** — add repos, add Skills, no bot refactoring needed
 - **Persistent memory** — auto-saves conversation context to dev-journal, injected into next session
-- **Session planning** — `/plan` during fragmented time, auto-injected and consumed at next core session
+- **Session planning** — `/plan` with inline buttons: record intent → Opus analyzes → Sonnet implements (checklist with partial completion)
+- **Model switching** — `/deep` for mid-session Opus upgrade; unknown commands forwarded instead of dropped
 - **Code-defined workflows** — multi-step chains with per-step model selection (sonnet for gathering, opus for synthesis)
 
 ## License
