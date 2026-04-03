@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pytest
 
 
-def _make_update(text: str = "/restart", user_id: int = 123):
+def _make_update(text: str = "/restart", user_id: int = 123, chat_id: int = 456):
     update = AsyncMock()
     update.effective_user = MagicMock(id=user_id)
+    update.effective_chat = MagicMock(id=chat_id)
     update.message.text = text
     update.message.reply_text = AsyncMock()
     return update
@@ -93,3 +94,61 @@ class TestRestartPull:
 
         # Clean up
         sessions._sessions.pop(123, None)
+
+
+class TestRestartNotify:
+    """Restart should write notify file; post_init should send notification."""
+
+    @patch("bot.ADMIN_ID", 123)
+    @patch("bot.os._exit")
+    @patch("bot.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot._git_pull", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_restart_writes_notify_file(self, mock_pull, mock_sleep, mock_exit, tmp_path):
+        """cmd_restart should write .restart_notify with chat_id before exit."""
+        import bot
+        mock_pull.return_value = None
+        original_repo_dir = bot.REPO_DIR
+
+        with patch.object(bot, "REPO_DIR", tmp_path):
+            update = _make_update(chat_id=456)
+            ctx = AsyncMock()
+            await bot.cmd_restart(update, ctx)
+
+        notify_file = tmp_path / ".restart_notify"
+        assert notify_file.exists(), ".restart_notify should be written before exit"
+        assert notify_file.read_text().strip() == "456"
+
+    @pytest.mark.asyncio
+    async def test_post_init_sends_notify_and_deletes_file(self, tmp_path):
+        """post_init should send restart notification and delete .restart_notify."""
+        import bot
+
+        notify_file = tmp_path / ".restart_notify"
+        notify_file.write_text("456")
+
+        mock_app = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+        mock_app.bot.send_message = AsyncMock()
+
+        with patch.object(bot, "REPO_DIR", tmp_path):
+            await bot.post_init(mock_app)
+
+        mock_app.bot.send_message.assert_called_once()
+        call_kwargs = mock_app.bot.send_message.call_args
+        assert call_kwargs[0][0] == 456 or call_kwargs[1].get("chat_id") == 456
+        assert not notify_file.exists(), ".restart_notify should be deleted after notification"
+
+    @pytest.mark.asyncio
+    async def test_post_init_no_notify_file(self, tmp_path):
+        """post_init should not send notification if .restart_notify doesn't exist."""
+        import bot
+
+        mock_app = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+        mock_app.bot.send_message = AsyncMock()
+
+        with patch.object(bot, "REPO_DIR", tmp_path):
+            await bot.post_init(mock_app)
+
+        mock_app.bot.send_message.assert_not_called()

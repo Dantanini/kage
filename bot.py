@@ -358,6 +358,17 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Pull both repos before restart
     await update.message.reply_text("📥 正在拉取最新程式碼...")
     pull_errors = []
+    # Ensure kage is on main before pulling
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "checkout", "main",
+            cwd=str(REPO_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+    except Exception as e:
+        logger.warning(f"git checkout main failed: {e}")
     for name, path in [("kage", str(REPO_DIR)), ("journal", REPOS["journal"])]:
         err = await _git_pull(path)
         if err:
@@ -370,6 +381,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
+    # Write notify file so post_init can confirm restart to user
+    (REPO_DIR / ".restart_notify").write_text(str(update.effective_chat.id))
     # Clean exit — remove recovery marker
     (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
     os._exit(0)
@@ -864,7 +877,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(app: Application):
-    """Set bot commands menu."""
+    """Set bot commands menu and send restart notification if applicable."""
+    notify_file = REPO_DIR / ".restart_notify"
+    if notify_file.exists():
+        try:
+            chat_id = int(notify_file.read_text().strip())
+            await app.bot.send_message(chat_id, "✅ 重啟完成")
+        except Exception as e:
+            logger.warning(f"Failed to send restart notification: {e}")
+        finally:
+            notify_file.unlink(missing_ok=True)
+
     commands = [
         BotCommand("start", "顯示指令列表"),
         BotCommand("deep", "聊到一半需要深度思考→切 Opus 不斷對話"),
