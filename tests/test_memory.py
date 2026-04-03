@@ -67,6 +67,78 @@ class TestMemoryStore:
         assert store.path.parent.exists()
 
 
+class TestStructuredMemory:
+    """Test structured memory directory support (active-tasks, lessons-learned, session-log)."""
+
+    @pytest.fixture
+    def structured_dir(self, tmp_path):
+        """Create a memory/kage-memory/ directory with structured files."""
+        mem_dir = tmp_path / "memory" / "kage-memory"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "active-tasks.md").write_text(
+            "---\ntitle: Active Tasks\ntags: [tg-bot]\nupdated: 2026-04-03\n---\n\n"
+            "# Active Tasks\n\n- PR #12 pdf-support\n- PR #13 pattern detector\n",
+            encoding="utf-8",
+        )
+        (mem_dir / "lessons-learned.md").write_text(
+            "---\ntitle: Lessons\ntags: [tg-bot]\nupdated: 2026-04-03\n---\n\n"
+            "# Lessons\n\n- Check log before saying ready\n",
+            encoding="utf-8",
+        )
+        (mem_dir / "session-log.md").write_text(
+            "---\ntitle: Session Log\ntags: [tg-bot]\nupdated: 2026-04-03\n---\n\n"
+            "# Session Log\n\n## 2026-04-02\n\nDid stuff\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_read_structured_merges_all_files(self, structured_dir):
+        store = MemoryStore(base_dir=str(structured_dir))
+        content = store.read()
+        assert "PR #12" in content
+        assert "Check log" in content
+        assert "2026-04-02" in content
+
+    def test_read_structured_strips_frontmatter(self, structured_dir):
+        store = MemoryStore(base_dir=str(structured_dir))
+        content = store.read()
+        assert "---" not in content
+        assert "updated:" not in content
+
+    def test_read_structured_respects_limit(self, structured_dir):
+        store = MemoryStore(base_dir=str(structured_dir))
+        content = store.read(limit=50)
+        assert len(content) <= 70  # 50 + truncation marker
+
+    def test_read_structured_falls_back_to_single_file(self, tmp_path):
+        """If kage-memory/ dir doesn't exist but kage-memory.md does, use the file."""
+        mem_dir = tmp_path / "memory"
+        mem_dir.mkdir(parents=True)
+        (mem_dir / "kage-memory.md").write_text("## old format\n- legacy content\n")
+        store = MemoryStore(base_dir=str(tmp_path))
+        content = store.read()
+        assert "legacy content" in content
+
+    def test_read_structured_prefers_dir_over_file(self, structured_dir):
+        """If both dir and file exist, prefer the directory."""
+        (structured_dir / "memory" / "kage-memory.md").write_text("old single file")
+        store = MemoryStore(base_dir=str(structured_dir))
+        content = store.read()
+        assert "PR #12" in content
+        assert "old single file" not in content
+
+    def test_build_save_prompt_references_structured_dir(self, structured_dir):
+        store = MemoryStore(base_dir=str(structured_dir))
+        prompt = store.build_save_prompt([("q", "a")])
+        assert "session-log.md" in prompt
+
+    def test_context_prefix_works_with_structured(self, structured_dir):
+        store = MemoryStore(base_dir=str(structured_dir))
+        prefix = store.build_context_prefix()
+        assert "[持久記憶" in prefix
+        assert "PR #12" in prefix
+
+
 class TestRecoveryDetection:
     """Test abnormal exit detection via .needs_recovery marker."""
 
