@@ -78,6 +78,11 @@ sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
 memory_store = MemoryStore(base_dir=REPOS["journal"])
 plan_store = PlanStore(base_dir=REPOS["journal"])
 
+# Track pending plan record state (chat_id → True when waiting for next message)
+_pending_plan_record: dict[int, bool] = {}
+# Track pending conflict resolution (chat_id → new plan text)
+_pending_plan_conflict: dict[int, str] = {}
+
 
 # --- Session hooks ---
 def _make_git_pull_hook():
@@ -290,6 +295,67 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch current session to Opus without losing conversation context."""
+    if not await _check_auth(update):
+        return
+
+    _touch_activity()
+    user_id = update.effective_user.id
+    text = (update.message.text or "").strip()
+
+    # Get or create session
+    session = sessions.get(user_id)
+    if not session:
+        session = sessions.create(user_id, "chat", "opus")
+    else:
+        session.model = "opus"
+
+    # Extract text after /deep
+    parts = text.split(None, 1)
+    prompt = parts[1] if len(parts) > 1 else ""
+
+    if not prompt:
+        await update.message.reply_text("已切換至 Opus，對話繼續。")
+        return
+
+    # Has text — switch model and send to Claude immediately
+    resume = not session.is_first_message
+
+    hook_errors = await session.run_start_hooks()
+    for err in hook_errors:
+        logger.warning(f"Session start hook: {err}")
+
+    status_msg = await update.message.reply_text("🧠 | opus | 思考中...")
+
+    async def keep_typing():
+        try:
+            while True:
+                await update.message.chat.send_action("typing")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
+
+    typing_task = asyncio.create_task(keep_typing())
+    result = await _run_claude(prompt, "opus", session.session_id, resume=resume)
+    typing_task.cancel()
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    if not result.startswith("⚠️"):
+        session.touch()
+        session.qa_log.append((prompt, result))
+
+    if len(result) <= 4000:
+        await update.message.reply_text(result)
+    else:
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i + 4000])
+
+
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -361,32 +427,37 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Write or view session plan. /plan = view, /plan <text> = write, /plan + = append."""
+    """Plan menu. /plan = show buttons, /plan <text> = record intent."""
     if not await _check_auth(update):
         return
 
     text = (update.message.text or "").strip()
-    # Strip /plan prefix
     args = text.split(None, 1)
     body = args[1] if len(args) > 1 else ""
 
     if not body:
-        # View current plan
-        content = plan_store.read()
-        if content:
-            await update.message.reply_text(f"📋 目前計畫：\n\n{content}")
-        else:
-            await update.message.reply_text("沒有待執行的計畫。用 /plan <內容> 建立。")
+        # Show plan menu with inline buttons
+        has_plan = plan_store.has_plan()
+        status = "📋 有待執行計畫" if has_plan else "📭 目前無計畫"
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📝 記錄", callback_data="plan_record"),
+                InlineKeyboardButton("▶️ 開始計畫", callback_data="plan_start"),
+            ],
+            [
+                InlineKeyboardButton("🔨 實作", callback_data="plan_impl"),
+                InlineKeyboardButton("📋 查看計畫", callback_data="plan_view"),
+            ],
+        ])
+        await update.message.reply_text(
+            f"{status}\n\n選擇操作：",
+            reply_markup=keyboard,
+        )
         return
 
-    if body.startswith("+"):
-        # Append mode
-        plan_store.append(body[1:].strip())
-        await update.message.reply_text("✅ 已追加到計畫")
-    else:
-        # Overwrite
-        plan_store.write(body)
-        await update.message.reply_text("✅ 計畫已儲存，下次 session 會自動載入")
+    # Has text → record plan intent
+    plan_store.write(body)
+    await update.message.reply_text("✅ 計畫已記錄")
 
 
 async def handle_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -547,6 +618,85 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         steps = build_evening_steps()
         results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
         result = format_workflow_results(results)
+    elif action == "plan_view":
+        content = plan_store.read()
+        if content:
+            await query.edit_message_text(f"📋 目前計畫：\n\n{content}")
+        else:
+            await query.edit_message_text("📭 沒有待執行的計畫。")
+        return
+    elif action == "plan_record":
+        await query.edit_message_text("📝 請輸入計畫內容（下一則訊息會被記錄為計畫）：")
+        # Set pending state so next message gets captured as plan
+        _pending_plan_record[chat_id] = True
+        return
+    elif action == "plan_start":
+        content = plan_store.read()
+        if not content:
+            await query.edit_message_text("📭 沒有計畫可分析。先用「記錄」新增計畫。")
+            return
+        await query.edit_message_text("🧠 Opus 正在分析計畫...")
+        import uuid as _uuid
+        prompt = (
+            f"以下是使用者的計畫意圖，請分析並產出具體的 implementation checklist。\n"
+            f"用 markdown checklist 格式（- [ ] step）。\n"
+            f"考慮：架構影響、實作順序、風險。\n\n"
+            f"{content}"
+        )
+        result = await _run_claude(prompt, "opus", str(_uuid.uuid4()), resume=False)
+        if not result.startswith("⚠️"):
+            # Save Opus output as implementation plan
+            impl_plan_path = plan_store._dir / "implementation-plan.md"
+            today = date.today().isoformat()
+            impl_plan_path.write_text(
+                f"---\ntitle: Implementation Plan\ntags: [system, active]\nupdated: {today}\n---\n\n{result}\n",
+                encoding="utf-8",
+            )
+            # Show result with confirm buttons
+            preview = result[:3000]
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ 確認並開始實作", callback_data="plan_confirm_impl"),
+                InlineKeyboardButton("📌 確認，稍後再做", callback_data="plan_confirm_later"),
+            ]])
+            await context.bot.send_message(chat_id, f"📋 實作計畫：\n\n{preview}", reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id, f"⚠️ 分析失敗：{result[:500]}")
+        return
+    elif action == "plan_confirm_impl":
+        await query.edit_message_text("🔨 開始實作...")
+        await _run_plan_impl(chat_id, context)
+        return
+    elif action == "plan_confirm_later":
+        await query.edit_message_text("📌 計畫已確認，稍後用 /plan → 實作 開始執行。")
+        return
+    elif action == "plan_merge_overwrite":
+        new_text = _pending_plan_conflict.pop(chat_id, "")
+        if new_text:
+            plan_store.write(new_text)
+            await query.edit_message_text("✅ 計畫已覆蓋")
+        else:
+            await query.edit_message_text("⚠️ 找不到待覆蓋內容")
+        return
+    elif action == "plan_merge_append":
+        new_text = _pending_plan_conflict.pop(chat_id, "")
+        if new_text:
+            plan_store.append(new_text)
+            await query.edit_message_text("✅ 已追加到計畫")
+        else:
+            await query.edit_message_text("⚠️ 找不到待追加內容")
+        return
+    elif action == "plan_merge_cancel":
+        _pending_plan_conflict.pop(chat_id, None)
+        await query.edit_message_text("❌ 已取消")
+        return
+    elif action == "plan_impl":
+        impl_path = plan_store._dir / "implementation-plan.md"
+        if not impl_path.exists():
+            await query.edit_message_text("📭 沒有實作計畫。先用「開始計畫」讓 Opus 分析。")
+            return
+        await query.edit_message_text("🔨 開始實作...")
+        await _run_plan_impl(chat_id, context)
+        return
     else:
         return
 
@@ -732,6 +882,42 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(result[i:i + 4000])
 
 
+async def _run_plan_impl(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute implementation plan with Sonnet, marking items as done."""
+    impl_path = plan_store._dir / "implementation-plan.md"
+    if not impl_path.exists():
+        await context.bot.send_message(chat_id, "📭 沒有實作計畫。")
+        return
+
+    content = impl_path.read_text(encoding="utf-8")
+    import uuid as _uuid
+    prompt = (
+        "以下是實作計畫，請逐項執行。每完成一項，更新 "
+        f"{impl_path} 中對應的 checkbox 為 [x]。\n"
+        "如果全部完成，回報結果。如果部分完成，說明進度。\n\n"
+        f"{content}"
+    )
+    result = await _run_claude(prompt, "sonnet", str(_uuid.uuid4()), resume=False)
+
+    if len(result) <= 4000:
+        await context.bot.send_message(chat_id, result)
+    else:
+        for i in range(0, len(result), 4000):
+            await context.bot.send_message(chat_id, result[i:i + 4000])
+
+    # Check if all items completed → consume
+    updated = impl_path.read_text(encoding="utf-8") if impl_path.exists() else ""
+    if updated and "- [ ]" not in updated and "- [x]" in updated:
+        impl_path.unlink(missing_ok=True)
+        plan_store.consume()
+        await context.bot.send_message(chat_id, "✅ 所有項目完成，計畫已清除。")
+
+
+async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Forward unregistered /commands to handle_message instead of silently dropping."""
+    await handle_message(update, context)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
@@ -743,6 +929,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    # Intercept pending plan record
+    if _pending_plan_record.pop(chat_id, False):
+        existing = plan_store.read()
+        if not existing:
+            # No existing plan → write directly
+            plan_store.write(text)
+            await update.message.reply_text("✅ 計畫已記錄")
+        else:
+            # Has existing plan → ask Claude to decide merge strategy
+            import uuid as _uuid
+            merge_prompt = (
+                "你是計畫合併助手。現有計畫和新輸入如下：\n\n"
+                f"【現有計畫】\n{existing}\n\n"
+                f"【新輸入】\n{text}\n\n"
+                "判斷：\n"
+                "1. 如果新輸入是現有計畫的補充 → 回覆 APPEND 開頭，接著合併後的完整計畫\n"
+                "2. 如果新輸入跟現有計畫方向不同（衝突）→ 回覆 CONFLICT 開頭，接著說明衝突原因\n"
+                "3. 如果新輸入明確要取代現有計畫 → 回覆 OVERWRITE 開頭，接著新計畫內容\n"
+                "只回覆上述格式，不要多餘解釋。"
+            )
+            result = await _run_claude(merge_prompt, "sonnet", str(_uuid.uuid4()), resume=False)
+
+            if result.startswith("APPEND"):
+                merged = result[len("APPEND"):].strip()
+                plan_store.write(merged)
+                await update.message.reply_text("✅ 已追加到現有計畫")
+            elif result.startswith("CONFLICT"):
+                reason = result[len("CONFLICT"):].strip()
+                # Store new text temporarily for conflict resolution
+                _pending_plan_conflict[chat_id] = text
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("覆蓋", callback_data="plan_merge_overwrite"),
+                    InlineKeyboardButton("追加", callback_data="plan_merge_append"),
+                    InlineKeyboardButton("取消", callback_data="plan_merge_cancel"),
+                ]])
+                await update.message.reply_text(
+                    f"⚠️ 計畫衝突：{reason}\n\n如何處理？",
+                    reply_markup=keyboard,
+                )
+            elif result.startswith("OVERWRITE"):
+                new_content = result[len("OVERWRITE"):].strip()
+                plan_store.write(new_content)
+                await update.message.reply_text("✅ 計畫已覆蓋")
+            else:
+                # Fallback: just append
+                plan_store.append(text)
+                await update.message.reply_text("✅ 已追加到計畫")
+        return
 
     logger.info(f"Message: {text[:80]}...")
     model, intent = route(text)
@@ -861,6 +1097,7 @@ async def post_init(app: Application):
         BotCommand("done", "結束對話並儲存"),
         BotCommand("restart", "重啟 Bot"),
         BotCommand("plan", "查看/建立下次 session 計畫"),
+        BotCommand("deep", "切換 Opus（保留對話脈絡）"),
         BotCommand("release", "開 Release PR（develop→main）"),
     ]
     await app.bot.set_my_commands(commands)
@@ -888,12 +1125,15 @@ def main():
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
     app.add_handler(CommandHandler("plan", cmd_plan))
+    app.add_handler(CommandHandler("deep", cmd_deep))
     app.add_handler(CommandHandler("release", handle_release))
     app.add_handler(CommandHandler("course", handle_message))
     app.add_handler(CommandHandler("opus", handle_message))
     app.add_handler(CommandHandler("sonnet", handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    # Unknown commands → treat as regular text (don't silently drop)
+    app.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     app.run_polling(drop_pending_updates=True)

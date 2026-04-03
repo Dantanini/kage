@@ -28,12 +28,14 @@ class TestPlanCommand:
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
-    async def test_plan_no_args_shows_empty(self):
+    async def test_plan_no_args_shows_buttons(self):
         update = _make_update("/plan")
         ctx = AsyncMock()
         await cmd_plan(update, ctx)
         reply = update.message.reply_text.call_args[0][0]
-        assert "沒有待執行的計畫" in reply
+        assert "目前無計畫" in reply
+        # Should have inline keyboard
+        assert "reply_markup" in update.message.reply_text.call_args.kwargs
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
@@ -42,29 +44,27 @@ class TestPlanCommand:
         ctx = AsyncMock()
         await cmd_plan(update, ctx)
         reply = update.message.reply_text.call_args[0][0]
-        assert "已儲存" in reply
+        assert "已記錄" in reply
         assert plan_store.has_plan()
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
-    async def test_plan_view_after_write(self):
+    async def test_plan_no_args_with_existing_shows_status(self):
         plan_store.write("Do important thing")
         update = _make_update("/plan")
         ctx = AsyncMock()
         await cmd_plan(update, ctx)
         reply = update.message.reply_text.call_args[0][0]
-        assert "Do important thing" in reply
+        assert "有待執行計畫" in reply
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
-    async def test_plan_append(self):
-        plan_store.write("Step 1")
-        update = _make_update("/plan + Step 2")
+    async def test_plan_text_records_directly(self):
+        update = _make_update("/plan Step 2 added")
         ctx = AsyncMock()
         await cmd_plan(update, ctx)
         reply = update.message.reply_text.call_args[0][0]
-        assert "追加" in reply
-        assert "Step 1" in plan_store.read()
+        assert "已記錄" in reply
         assert "Step 2" in plan_store.read()
 
 
