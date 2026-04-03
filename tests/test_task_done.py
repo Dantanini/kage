@@ -1,24 +1,26 @@
 """Tests for scripts/task_done.py — branch completion notification."""
 
 from unittest.mock import patch, MagicMock
-import importlib
-import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-# Import the module under test
-SCRIPT_DIR = Path(__file__).parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPT_DIR))
+SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "task_done.py"
+
+
+def _load_task_done():
+    """Load task_done module from scripts/ without polluting sys.path."""
+    spec = importlib.util.spec_from_file_location("task_done", SCRIPT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.fixture
 def task_done():
     """Import task_done module fresh each test."""
-    if "task_done" in sys.modules:
-        del sys.modules["task_done"]
-    import task_done
-    yield task_done
+    yield _load_task_done()
 
 
 class TestBuildMessage:
@@ -97,32 +99,33 @@ class TestBuildKeyboard:
 class TestSendNotification:
     """Test the send function calls Telegram API correctly."""
 
-    @patch("task_done.urllib.request.urlopen")
-    def test_sends_with_reply_markup(self, mock_urlopen, task_done):
-        mock_urlopen.return_value = MagicMock()
-        task_done.send_task_done(
-            branch="feat/x",
-            summary="s",
-            tests=["t1"],
-            prevents="p",
-            token="fake-token",
-            chat_id="123",
-        )
-        mock_urlopen.assert_called_once()
-        req = mock_urlopen.call_args[0][0]
+    def test_sends_with_reply_markup(self, task_done):
         import json
-        body = json.loads(req.data)
-        assert "reply_markup" in body
-        assert body["chat_id"] == 123
 
-    @patch("task_done.urllib.request.urlopen")
-    def test_returns_true_on_success(self, mock_urlopen, task_done):
-        mock_urlopen.return_value = MagicMock()
-        result = task_done.send_task_done(
-            branch="feat/x", summary="s", tests=["t"], prevents="p",
-            token="t", chat_id="1",
-        )
-        assert result is True
+        with patch.object(task_done.urllib.request, "urlopen") as mock_urlopen:
+            mock_urlopen.return_value = MagicMock()
+            task_done.send_task_done(
+                branch="feat/x",
+                summary="s",
+                tests=["t1"],
+                prevents="p",
+                token="fake-token",
+                chat_id="123",
+            )
+            mock_urlopen.assert_called_once()
+            req = mock_urlopen.call_args[0][0]
+            body = json.loads(req.data)
+            assert "reply_markup" in body
+            assert body["chat_id"] == 123
+
+    def test_returns_true_on_success(self, task_done):
+        with patch.object(task_done.urllib.request, "urlopen") as mock_urlopen:
+            mock_urlopen.return_value = MagicMock()
+            result = task_done.send_task_done(
+                branch="feat/x", summary="s", tests=["t"], prevents="p",
+                token="t", chat_id="1",
+            )
+            assert result is True
 
     def test_returns_false_on_missing_token(self, task_done):
         result = task_done.send_task_done(
