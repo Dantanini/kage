@@ -13,6 +13,7 @@ def _make_update(text: str, user_id: int = 123):
     update.effective_user = MagicMock(id=user_id)
     update.message.text = text
     update.message.reply_text = AsyncMock()
+    update.message.reply_to_message = None
     return update
 
 

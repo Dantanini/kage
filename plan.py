@@ -12,6 +12,17 @@ logger = logging.getLogger(__name__)
 
 PLAN_FILENAME = "next-session-plan.md"
 
+# Workflow instructions prepended to every plan injection.
+# User never sees this in the plan file — it's added at injection time.
+PLAN_INSTRUCTIONS = """\
+## Instructions
+- 每個 task 開獨立 feature branch from develop
+- commit 前必須 `git branch --show-current` 確認不在 main/develop
+- 完成一個 task 後立即呼叫 `python3 scripts/task_done.py` 發通知
+- **不要直接開 PR**，等用戶在 TG 按「開 PR」按鈕
+- PR 一律透過 `scripts/pr.sh` 開，寫死 `--base develop`
+"""
+
 
 class PlanStore:
     """Manages the next-session plan file."""
@@ -55,12 +66,17 @@ class PlanStore:
         return content
 
     def build_context_injection(self) -> str:
-        """Build a context block for prompt injection. Empty if no plan."""
+        """Build a context block for prompt injection. Empty if no plan.
+
+        Prepends workflow instructions so every model reading the plan
+        knows the rules (call task_done.py, don't open PR directly, etc.).
+        """
         content = self.read()
         if not content:
             return ""
         return (
             f"[下次 Session 計畫 — 碎片時間預先準備的任務清單]\n"
-            f"{content}\n"
+            f"{PLAN_INSTRUCTIONS}\n"
+            f"## Tasks\n{content}\n"
             f"[/下次 Session 計畫]\n\n"
         )

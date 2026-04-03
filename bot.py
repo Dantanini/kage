@@ -82,8 +82,8 @@ plan_store = PlanStore(base_dir=REPOS["journal"])
 _pending_plan_record: dict[int, bool] = {}
 # Track pending conflict resolution (chat_id → new plan text)
 _pending_plan_conflict: dict[int, str] = {}
-# Track pending task_ask Q&A state (chat_id → branch name)
-_pending_task_ask: dict[int, str] = {}
+# Marker prefix in task_ask prompt messages, used to extract branch from reply_to_message
+TASK_ASK_MARKER = "❓ 針對"
 
 
 # --- Session hooks ---
@@ -743,9 +743,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     elif action.startswith("task_ask:"):
         branch = action[len("task_ask:"):]
-        _pending_task_ask[chat_id] = branch
         await query.edit_message_text(
-            f"❓ 針對 {branch} 提問，請輸入問題："
+            f"{TASK_ASK_MARKER} {branch} 提問\n\n"
+            f"請「回覆」這則訊息輸入你的問題："
         )
         return
     else:
@@ -1028,9 +1028,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
-    # Intercept pending task_ask Q&A
-    if chat_id in _pending_task_ask:
-        branch = _pending_task_ask.pop(chat_id)
+    # Intercept reply to task_ask prompt — extract branch from replied message
+    reply_msg = update.message.reply_to_message
+    if reply_msg and reply_msg.text and reply_msg.text.startswith(TASK_ASK_MARKER):
+        # Extract branch from "❓ 針對 <branch> 提問"
+        marker_line = reply_msg.text.split("\n")[0]
+        branch = marker_line.replace(TASK_ASK_MARKER, "").replace("提問", "").strip()
+
         import uuid as _uuid
         prompt = (
             f"使用者針對 branch `{branch}` 提問。"

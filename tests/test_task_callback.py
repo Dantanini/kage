@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot import handle_callback, handle_message, _pending_task_ask
+from bot import handle_callback, handle_message, TASK_ASK_MARKER
 
 
 def _make_callback_query(action: str, user_id: int = 123, chat_id: int = 456):
@@ -20,25 +20,25 @@ def _make_callback_query(action: str, user_id: int = 123, chat_id: int = 456):
     return update
 
 
-def _make_message(text: str, user_id: int = 123, chat_id: int = 456):
-    """Create a mock text message update."""
+def _make_message(text: str, user_id: int = 123, chat_id: int = 456,
+                  reply_to_text: str | None = None):
+    """Create a mock text message update, optionally replying to another message."""
     update = AsyncMock()
     update.effective_user = MagicMock(id=user_id)
     update.effective_chat = MagicMock(id=chat_id)
     update.message.text = text
     update.message.reply_text = AsyncMock()
     update.message.chat.send_action = AsyncMock()
+    if reply_to_text is not None:
+        update.message.reply_to_message = MagicMock()
+        update.message.reply_to_message.text = reply_to_text
+    else:
+        update.message.reply_to_message = None
     return update
 
 
 class TestTaskPrCallback:
     """task_pr:<branch> should run scripts/pr.sh for that branch."""
-
-    @pytest.fixture(autouse=True)
-    def clean_state(self):
-        _pending_task_ask.clear()
-        yield
-        _pending_task_ask.clear()
 
     @patch("bot.ADMIN_ID", 123)
     @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
@@ -95,51 +95,47 @@ class TestTaskPrCallback:
 
 
 class TestTaskAskCallback:
-    """task_ask:<branch> should enter Q&A mode for that branch."""
-
-    @pytest.fixture(autouse=True)
-    def clean_state(self):
-        _pending_task_ask.clear()
-        yield
-        _pending_task_ask.clear()
+    """task_ask:<branch> should prompt user to reply with question."""
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
-    async def test_sets_pending_state(self):
-        """Should store branch in _pending_task_ask."""
-        update = _make_callback_query("task_ask:feat/guard", chat_id=789)
+    async def test_prompts_user_with_branch(self):
+        """Should show branch name and ask user to reply."""
+        update = _make_callback_query("task_ask:feat/guard")
         ctx = AsyncMock()
         await handle_callback(update, ctx)
 
-        assert 789 in _pending_task_ask
-        assert _pending_task_ask[789] == "feat/guard"
+        edit_text = update.callback_query.edit_message_text.call_args[0][0]
+        assert "feat/guard" in edit_text
+        assert TASK_ASK_MARKER in edit_text
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
-    async def test_prompts_user(self):
-        """Should ask user to type their question."""
+    async def test_prompt_contains_reply_instruction(self):
+        """Should tell user to reply to this message."""
         update = _make_callback_query("task_ask:feat/x")
         ctx = AsyncMock()
         await handle_callback(update, ctx)
 
         edit_text = update.callback_query.edit_message_text.call_args[0][0]
-        assert "feat/x" in edit_text
+        assert "回覆" in edit_text
+
+
+class TestTaskAskReply:
+    """When user replies to a task_ask prompt, Claude should answer with branch context."""
 
     @patch("bot.ADMIN_ID", 123)
     @patch("bot._run_claude", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_question_goes_to_claude_with_branch_context(self, mock_claude):
-        """When user types after task_ask, Claude should know the branch."""
+    async def test_reply_goes_to_claude_with_branch_context(self, mock_claude):
+        """Reply to task_ask prompt should include branch in Claude prompt."""
         mock_claude.return_value = "這個 branch 加了 guard"
 
-        # Set pending state
-        _pending_task_ask[456] = "feat/branch-guard"
-
-        update = _make_message("這個 branch 的測試覆蓋了什麼？", chat_id=456)
+        reply_text = f"{TASK_ASK_MARKER} feat/branch-guard 提問\n\n請「回覆」這則訊息輸入你的問題："
+        update = _make_message("測試覆蓋了什麼？", reply_to_text=reply_text)
         ctx = AsyncMock()
         await handle_message(update, ctx)
 
-        # Claude should receive prompt with branch context
         prompt_sent = mock_claude.call_args[0][0]
         assert "feat/branch-guard" in prompt_sent
 
@@ -150,32 +146,56 @@ class TestTaskAskCallback:
         """After answering, should show [開 PR] [追問] buttons again."""
         mock_claude.return_value = "答案"
 
-        _pending_task_ask[456] = "feat/x"
-
-        update = _make_message("問題？", chat_id=456)
+        reply_text = f"{TASK_ASK_MARKER} feat/x 提問\n\n請「回覆」這則訊息輸入你的問題："
+        update = _make_message("問題？", reply_to_text=reply_text)
         ctx = AsyncMock()
         await handle_message(update, ctx)
 
-        # Should have reply_text called with reply_markup (buttons)
         calls = update.message.reply_text.call_args_list
-        # Find the call that has reply_markup
         has_buttons = any(
             c[1].get("reply_markup") is not None
             for c in calls
-            if c[1]  # has kwargs
+            if c[1]
         )
         assert has_buttons, "Answer should include inline buttons"
 
     @patch("bot.ADMIN_ID", 123)
     @patch("bot._run_claude", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_clears_pending_after_answer(self, mock_claude):
-        """Should clear pending state after answering (buttons will re-set it if needed)."""
-        mock_claude.return_value = "答案"
-        _pending_task_ask[456] = "feat/x"
+    async def test_non_reply_message_not_intercepted(self, mock_claude):
+        """Regular messages (not replying to task_ask) should not trigger Q&A."""
+        mock_claude.return_value = "normal response"
 
-        update = _make_message("問題？", chat_id=456)
+        update = _make_message("隨便說的話")
         ctx = AsyncMock()
         await handle_message(update, ctx)
 
-        assert 456 not in _pending_task_ask
+        # Should go through normal routing, not task_ask
+        if mock_claude.called:
+            prompt_sent = mock_claude.call_args[0][0]
+            assert TASK_ASK_MARKER not in prompt_sent
+
+    @patch("bot.ADMIN_ID", 123)
+    @patch("bot._run_claude", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_concurrent_branches_independent(self, mock_claude):
+        """Replies to different branch prompts should each get correct branch context."""
+        mock_claude.return_value = "答案"
+
+        # Reply to branch A
+        reply_a = f"{TASK_ASK_MARKER} feat/branch-a 提問\n\n請「回覆」這則訊息輸入你的問題："
+        update_a = _make_message("branch A 的問題", reply_to_text=reply_a)
+        ctx = AsyncMock()
+        await handle_message(update_a, ctx)
+        prompt_a = mock_claude.call_args[0][0]
+        assert "feat/branch-a" in prompt_a
+
+        mock_claude.reset_mock()
+        mock_claude.return_value = "答案 B"
+
+        # Reply to branch B
+        reply_b = f"{TASK_ASK_MARKER} feat/branch-b 提問\n\n請「回覆」這則訊息輸入你的問題："
+        update_b = _make_message("branch B 的問題", reply_to_text=reply_b)
+        await handle_message(update_b, ctx)
+        prompt_b = mock_claude.call_args[0][0]
+        assert "feat/branch-b" in prompt_b

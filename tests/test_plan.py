@@ -67,3 +67,57 @@ class TestPlanStore:
         content = store.read()
         assert "New plan" in content
         assert "Old plan" not in content
+
+
+class TestPlanInstructions:
+    """Plan injection must include workflow instructions."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        return PlanStore(base_dir=str(tmp_path))
+
+    def test_injection_contains_instructions(self, store):
+        """Instructions section must be present when plan exists."""
+        store.write("- [ ] Task 1")
+        injection = store.build_context_injection()
+        assert "## Instructions" in injection
+
+    def test_injection_mentions_task_done(self, store):
+        """Must remind model to call task_done.py."""
+        store.write("- [ ] Task 1")
+        injection = store.build_context_injection()
+        assert "task_done" in injection
+
+    def test_injection_mentions_no_direct_pr(self, store):
+        """Must remind model not to open PR directly."""
+        store.write("- [ ] Task 1")
+        injection = store.build_context_injection()
+        assert "PR" in injection
+
+    def test_injection_mentions_develop(self, store):
+        """Must remind model to branch from develop."""
+        store.write("- [ ] Task 1")
+        injection = store.build_context_injection()
+        assert "develop" in injection
+
+    def test_injection_mentions_branch_check(self, store):
+        """Must remind model to verify branch before commit."""
+        store.write("- [ ] Task 1")
+        injection = store.build_context_injection()
+        assert "git branch" in injection
+
+    def test_injection_contains_user_tasks(self, store):
+        """User's tasks must appear in the injection."""
+        store.write("- [ ] Add login page\n- [ ] Fix logout bug")
+        injection = store.build_context_injection()
+        assert "Add login page" in injection
+        assert "Fix logout bug" in injection
+
+    def test_write_preserves_user_content_only(self, store):
+        """write() stores user content, instructions added at injection time."""
+        store.write("- [ ] My task")
+        raw = store.path.read_text(encoding="utf-8")
+        # Raw file has user content
+        assert "My task" in raw
+        # Instructions are added at injection, not in the file
+        # (so user editing the file doesn't see boilerplate)
