@@ -1,5 +1,16 @@
 #!/bin/sh
-# Pre-commit hook: multi-layer secret protection
+# Pre-commit hook: branch guard + multi-layer secret protection
+
+# === Layer 0: Branch guard ===
+PROTECTED_BRANCHES="main develop"
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+for protected in $PROTECTED_BRANCHES; do
+    if [ "$BRANCH" = "$protected" ]; then
+        echo "❌ 禁止在 $BRANCH 上直接 commit。請切到 feature branch。"
+        echo "   git checkout -b feat/your-feature"
+        exit 1
+    fi
+done
 
 # === Layer 1: Check for forbidden files ===
 FORBIDDEN_FILES=".env credentials.json service-account.json *.pem *.key"
