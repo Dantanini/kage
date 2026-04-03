@@ -82,6 +82,8 @@ plan_store = PlanStore(base_dir=REPOS["journal"])
 _pending_plan_record: dict[int, bool] = {}
 # Track pending conflict resolution (chat_id → new plan text)
 _pending_plan_conflict: dict[int, str] = {}
+# Track pending task_ask Q&A state (chat_id → branch name)
+_pending_task_ask: dict[int, str] = {}
 
 
 # --- Session hooks ---
@@ -722,6 +724,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔨 開始實作...")
         await _run_plan_impl(chat_id, context)
         return
+    elif action.startswith("task_pr:"):
+        branch = action[len("task_pr:"):]
+        await query.edit_message_text(f"🚀 正在為 {branch} 開 PR...")
+        pr_script = str(REPO_DIR / "scripts" / "pr.sh")
+        proc = await asyncio.create_subprocess_exec(
+            "bash", pr_script, "--branch", branch,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(REPO_DIR),
+        )
+        stdout, stderr = await proc.communicate()
+        output = stdout.decode().strip() or stderr.decode().strip()
+        if proc.returncode == 0:
+            await context.bot.send_message(chat_id, f"✅ PR 已開：\n{output}")
+        else:
+            await context.bot.send_message(chat_id, f"❌ 開 PR 失敗：\n{output}")
+        return
+    elif action.startswith("task_ask:"):
+        branch = action[len("task_ask:"):]
+        _pending_task_ask[chat_id] = branch
+        await query.edit_message_text(
+            f"❓ 針對 {branch} 提問，請輸入問題："
+        )
+        return
     else:
         return
 
@@ -999,6 +1025,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 plan_store.append(text)
                 await update.message.reply_text("✅ 已追加到計畫")
+
+        return
+
+    # Intercept pending task_ask Q&A
+    if chat_id in _pending_task_ask:
+        branch = _pending_task_ask.pop(chat_id)
+        import uuid as _uuid
+        prompt = (
+            f"使用者針對 branch `{branch}` 提問。"
+            f"請先用 `git log --oneline {branch}` 和 `git diff develop..{branch}` "
+            f"了解這個 branch 的改動，再回答以下問題：\n\n{text}"
+        )
+        status_msg = await update.message.reply_text(f"🔍 查看 {branch} 中...")
+
+        async def keep_typing():
+            try:
+                while True:
+                    await update.message.chat.send_action("typing")
+                    await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                pass
+
+        typing_task = asyncio.create_task(keep_typing())
+        result = await _run_claude(prompt, "sonnet", str(_uuid.uuid4()), resume=False)
+        typing_task.cancel()
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        # Send answer
+        if len(result) <= 4000:
+            await update.message.reply_text(result)
+        else:
+            for i in range(0, len(result), 4000):
+                await update.message.reply_text(result[i:i + 4000])
+
+        # Re-show buttons
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🚀 開 PR", callback_data=f"task_pr:{branch}"),
+            InlineKeyboardButton("❓ 追問", callback_data=f"task_ask:{branch}"),
+        ]])
+        await update.message.reply_text(
+            f"還有其他問題嗎？（branch: {branch}）",
+            reply_markup=keyboard,
+        )
         return
 
     logger.info(f"Message: {text[:80]}...")
