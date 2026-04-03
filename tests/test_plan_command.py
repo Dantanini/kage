@@ -28,12 +28,29 @@ class TestPlanCommand:
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
-    async def test_plan_no_args_shows_empty(self):
+    async def test_plan_no_args_shows_buttons_no_plan(self):
+        """With no plan, /plan shows 📭 status and button menu."""
         update = _make_update("/plan")
         ctx = AsyncMock()
         await cmd_plan(update, ctx)
-        reply = update.message.reply_text.call_args[0][0]
-        assert "沒有待執行的計畫" in reply
+        call_kwargs = update.message.reply_text.call_args
+        reply_text = call_kwargs[0][0]
+        assert "📭" in reply_text
+        assert "選擇操作" in reply_text
+        assert call_kwargs[1].get("reply_markup") is not None
+
+    @patch("bot.ADMIN_ID", 123)
+    @pytest.mark.asyncio
+    async def test_plan_no_args_shows_buttons_with_plan(self):
+        """With existing plan, /plan shows 📋 status and button menu."""
+        plan_store.write("Do important thing")
+        update = _make_update("/plan")
+        ctx = AsyncMock()
+        await cmd_plan(update, ctx)
+        call_kwargs = update.message.reply_text.call_args
+        reply_text = call_kwargs[0][0]
+        assert "📋" in reply_text
+        assert "選擇操作" in reply_text
 
     @patch("bot.ADMIN_ID", 123)
     @pytest.mark.asyncio
@@ -42,30 +59,8 @@ class TestPlanCommand:
         ctx = AsyncMock()
         await cmd_plan(update, ctx)
         reply = update.message.reply_text.call_args[0][0]
-        assert "已儲存" in reply
+        assert "已記錄" in reply
         assert plan_store.has_plan()
-
-    @patch("bot.ADMIN_ID", 123)
-    @pytest.mark.asyncio
-    async def test_plan_view_after_write(self):
-        plan_store.write("Do important thing")
-        update = _make_update("/plan")
-        ctx = AsyncMock()
-        await cmd_plan(update, ctx)
-        reply = update.message.reply_text.call_args[0][0]
-        assert "Do important thing" in reply
-
-    @patch("bot.ADMIN_ID", 123)
-    @pytest.mark.asyncio
-    async def test_plan_append(self):
-        plan_store.write("Step 1")
-        update = _make_update("/plan + Step 2")
-        ctx = AsyncMock()
-        await cmd_plan(update, ctx)
-        reply = update.message.reply_text.call_args[0][0]
-        assert "追加" in reply
-        assert "Step 1" in plan_store.read()
-        assert "Step 2" in plan_store.read()
 
 
 class TestPlanConsumeSafety:
