@@ -21,11 +21,15 @@ class TestRestartPull:
     @patch("bot.os._exit")
     @patch("bot.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_restart_pulls_both_repos(self, mock_pull, mock_sleep, mock_exit):
+    async def test_restart_pulls_both_repos(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
         """Restart should git pull both kage and journal repos."""
         from bot import cmd_restart, REPOS, REPO_DIR
         mock_pull.return_value = None  # success
+        mock_subprocess.return_value = AsyncMock(communicate=AsyncMock(return_value=(b"", b"")))
 
         update = _make_update()
         ctx = AsyncMock()
@@ -40,11 +44,15 @@ class TestRestartPull:
     @patch("bot.os._exit")
     @patch("bot.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_restart_notifies_pull_failure(self, mock_pull, mock_sleep, mock_exit):
+    async def test_restart_notifies_pull_failure(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
         """If git pull fails, user should see a warning."""
         from bot import cmd_restart
         mock_pull.return_value = "git pull 失敗: merge conflict"
+        mock_subprocess.return_value = AsyncMock(communicate=AsyncMock(return_value=(b"", b"")))
 
         update = _make_update()
         ctx = AsyncMock()
@@ -58,11 +66,15 @@ class TestRestartPull:
     @patch("bot.os._exit")
     @patch("bot.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_restart_continues_even_if_pull_fails(self, mock_pull, mock_sleep, mock_exit):
+    async def test_restart_continues_even_if_pull_fails(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
         """Pull failure should NOT block restart."""
         from bot import cmd_restart
         mock_pull.return_value = "git pull 失敗: conflict"
+        mock_subprocess.return_value = AsyncMock(communicate=AsyncMock(return_value=(b"", b"")))
 
         update = _make_update()
         ctx = AsyncMock()
@@ -75,11 +87,15 @@ class TestRestartPull:
     @patch("bot.os._exit")
     @patch("bot.asyncio.sleep", new_callable=AsyncMock)
     @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_restart_saves_memory_before_pull(self, mock_pull, mock_sleep, mock_exit):
+    async def test_restart_saves_memory_before_pull(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
         """Memory should be saved before pull (existing behavior preserved)."""
         from bot import cmd_restart, sessions
         mock_pull.return_value = None
+        mock_subprocess.return_value = AsyncMock(communicate=AsyncMock(return_value=(b"", b"")))
 
         # Create a session with qa_log
         session = sessions.get_or_create(123, "chat", "sonnet")
