@@ -5,6 +5,7 @@ COMMAND_ROUTES: dict[str, tuple[str, str]] = {
     "/course": ("opus", "course"),
     "/morning": ("opus", "morning"),
     "/evening": ("opus", "evening"),
+    "/deep": ("opus", "chat"),
     "/opus": ("opus", "chat"),
     "/sonnet": ("sonnet", "chat"),
     "/note": ("sonnet", "note"),
