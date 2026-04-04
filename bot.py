@@ -23,7 +23,7 @@ from telegram.ext import (
 
 from memory import MemoryStore
 from plan_v2 import PlanStore, PlanStatus
-from prompt_specs import PLAN_SPECS, build_prompt
+from prompt_specs import PLAN_SPECS, COURSE_SPECS, build_prompt
 from router import route
 from session import SessionManager
 from tg_notify import build_memory_save_message, send_telegram_message
@@ -198,7 +198,7 @@ async def _kill_stale_claude() -> None:
         logger.debug(f"_kill_stale_claude: {e}")
 
 
-async def _run_claude_once(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
+async def _run_claude_once(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None, inject_plan: bool = False) -> str:
     """Single attempt to execute claude -p and return output."""
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
@@ -214,7 +214,9 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     if not resume:
         recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
         memory_prefix = memory_store.build_context_prefix()
-        plan_prefix = plan_store.build_context_injection()
+        # Only inject plan context for interactive chat sessions; skip for
+        # workflows, course, note, task execution, and background tasks.
+        plan_prefix = plan_store.build_context_injection() if inject_plan else ""
         prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}{plan_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
@@ -232,12 +234,12 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     return stdout.decode().strip()
 
 
-async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
+async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None, inject_plan: bool = False) -> str:
     """Execute claude -p with retry (max MAX_RETRIES). Returns error string on final failure."""
     last_err = ""
     for attempt in range(MAX_RETRIES + 1):
         try:
-            return await _run_claude_once(prompt, model, session_id, resume=resume, cwd=cwd)
+            return await _run_claude_once(prompt, model, session_id, resume=resume, cwd=cwd, inject_plan=inject_plan)
         except Exception as e:
             last_err = str(e)
             logger.warning(f"claude attempt {attempt + 1} failed: {last_err[:200]}")
@@ -263,10 +265,7 @@ async def _flush_qa_log(session, cwd: str | None = None) -> str | None:
     log_text = "\n\n---\n\n".join(
         f"**問：** {q}\n\n**答：** {a}" for q, a in session.qa_log
     )
-    prompt = (
-        "以下是這次學習對話的完整問答紀錄。請整理成結構化課程筆記，"
-        "存到 learning/ 對應的檔案，並更新 learning/INDEX.md。\n\n" + log_text
-    )
+    prompt = build_prompt(COURSE_SPECS["course_flush"], {"qa_log": log_text})
     result = await _run_claude(prompt, session.model, str(_uuid.uuid4()), resume=False, cwd=cwd)
     session.qa_log.clear()
     return result
@@ -340,7 +339,7 @@ async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     typing_task = asyncio.create_task(keep_typing())
-    result = await _run_claude(prompt, "opus", session.session_id, resume=resume)
+    result = await _run_claude(prompt, "opus", session.session_id, resume=resume, inject_plan=True)
     typing_task.cancel()
 
     try:
@@ -560,6 +559,47 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     body = args[1] if len(args) > 1 else ""
 
     if body:
+        # /plan delete [N]
+        if body.lower().startswith("delete"):
+            parts = body.split(None, 1)
+            if len(parts) < 2:
+                # Show numbered list so user knows what index to use
+                items = plan_store.all_items_numbered()
+                if not items:
+                    await update.message.reply_text("📭 目前沒有項目可刪除。")
+                else:
+                    lines = [f"{idx}. {line}" for (_, line, idx) in items]
+                    await update.message.reply_text(
+                        "請輸入要刪除的項目編號，例如 `/plan delete 2`\n\n"
+                        + "\n".join(lines),
+                        parse_mode="Markdown",
+                    )
+                return
+
+            raw_n = parts[1].strip()
+            if not raw_n.isdigit():
+                await update.message.reply_text(
+                    f"❌ 請輸入數字，例如 `/plan delete 2`（收到：`{raw_n}`）",
+                    parse_mode="Markdown",
+                )
+                return
+
+            n = int(raw_n)
+            deleted = plan_store.delete_item(n)
+            if deleted is None:
+                await update.message.reply_text(f"❌ 找不到項目 #{n}，請先用 `/plan delete` 查看編號。", parse_mode="Markdown")
+                return
+
+            status = plan_store.status
+            content = plan_store.read()
+            preview = content[:2000] if content else ""
+            keyboard = _plan_buttons_for_status(status, has_draft=bool(plan_store.draft_items()))
+            msg = f"🗑️ 已刪除 #{n}：`{deleted}`"
+            if preview:
+                msg += f"\n\n{preview}"
+            await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+            return
+
         # Quick append: /plan <text>
         plan_store.append(body)
         status = plan_store.status
@@ -685,9 +725,13 @@ async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pull_err:
         await update.message.reply_text(f"⚠️ {pull_err}\n繼續執行...")
 
-    steps = build_evening_steps()
+    completed_items = plan_store.read_completed()
+    steps = build_evening_steps(completed_items=completed_items)
     results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
     result = format_workflow_results(results)
+
+    if completed_items and results and results[-1].success:
+        plan_store.archive_completed()
 
     try:
         await status_msg.delete()
@@ -759,9 +803,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = format_workflow_results(results)
     elif action == "evening":
         status_msg = await context.bot.send_message(chat_id, "🌙 正在整理今日日結（分步執行中）...")
-        steps = build_evening_steps()
+        completed_items = plan_store.read_completed()
+        steps = build_evening_steps(completed_items=completed_items)
         results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
         result = format_workflow_results(results)
+        if completed_items and results and results[-1].success:
+            plan_store.archive_completed()
     # ── Plan v2 actions ──
     elif action == "plan_write":
         await query.edit_message_text("📝 請輸入計畫內容（下一則訊息會被記錄）：")
@@ -1313,7 +1360,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     typing_task = asyncio.create_task(keep_typing())
 
-    result = await _run_claude(prompt, model, session.session_id, resume=resume)
+    result = await _run_claude(prompt, model, session.session_id, resume=resume, inject_plan=(intent == "chat"))
 
     typing_task.cancel()
 

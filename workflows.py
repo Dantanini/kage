@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 
+from prompt_specs import MORNING_SPECS, EVENING_SPECS, build_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,77 +37,66 @@ class WorkflowResult:
 
 
 def build_morning_steps(today: str | None = None) -> list[WorkflowStep]:
-    """Build the morning workflow steps."""
+    """Build the morning workflow steps from MORNING_SPECS."""
     today = today or date.today().isoformat()
+    inputs_by_step: dict[str, dict[str, str]] = {
+        "gather_focus": {"today": today},
+        "gather_recent": {},
+        "synthesize": {},
+    }
     return [
         WorkflowStep(
-            name="gather_focus",
-            prompt=f"[系統] 今天是 {today}。\n讀 profile/current-focus.md，回傳目前三條主線的重點摘要（不超過 200 字）。",
-            model="sonnet",
-            include_previous=False,
-        ),
-        WorkflowStep(
-            name="gather_recent",
-            prompt="讀最近 3 天的 daily/*.md，回傳近期進度摘要（不超過 200 字）。有哪些完成了、哪些卡住了？",
-            model="sonnet",
-            include_previous=False,
-        ),
-        WorkflowStep(
-            name="synthesize",
-            prompt=(
-                "根據以上主線和近期進度，給 Dante 今日建議：\n"
-                "1. 今天最重要的 1-2 件事（根據主線優先順序）\n"
-                "2. 學習可以從哪裡繼續\n"
-                "3. 有沒有什麼卡住的需要處理\n"
-                "請簡潔，不超過 300 字。"
-            ),
-            model="opus",
-            include_previous=True,
-        ),
+            name=name,
+            prompt=build_prompt(spec, inputs_by_step[name]),
+            model=spec.model,
+            include_previous=spec.include_previous,
+        )
+        for name, spec in MORNING_SPECS.items()
     ]
 
 
-def build_evening_steps(today: str | None = None) -> list[WorkflowStep]:
-    """Build the evening workflow steps."""
+def build_evening_steps(today: str | None = None, completed_items: str = "") -> list[WorkflowStep]:
+    """Build the evening workflow steps from EVENING_SPECS.
+
+    Args:
+        today: Date string in YYYY-MM-DD format. Defaults to today.
+        completed_items: Content from plan_store.read_completed(). If non-empty,
+            included in the daily update step so completed tasks are recorded.
+    """
     today = today or date.today().isoformat()
-    return [
+    inputs_by_step: dict[str, dict[str, str]] = {
+        "gather_today": {"today": today},
+        "update_memory_and_readme": {},
+        "update_daily_and_commit": {"today": today},
+    }
+
+    plan_section = ""
+    if completed_items:
+        plan_section = (
+            f"\n\n【今日已完成的計畫項目】\n{completed_items}\n"
+            f"請把這些完成項目也寫進 daily/{today}.md。"
+        )
+
+    steps = [
         WorkflowStep(
-            name="gather_today",
-            prompt=(
-                f"[系統] 今天是 {today}。\n"
-                f"讀今天的 daily/{today}.md（如果存在）和 inbox/raw-notes.md，"
-                f"回傳今天做了什麼的摘要（不超過 200 字）。"
-            ),
-            model="sonnet",
-            include_previous=False,
-        ),
-        WorkflowStep(
-            name="update_memory_and_readme",
-            prompt=(
-                f"根據以上摘要和今天的對話，執行以下檢查和更新：\n"
-                f"1. 更新 memory/kage-memory/ 底下的檔案（如果有新的 lessons、task 進度變化）\n"
-                f"2. 檢查對使用者有沒有新的觀察或評估值得記錄\n"
-                f"3. 檢查 ~/kage/README.md 是否跟現有功能一致（指令表、test 數量、架構描述）\n"
-                f"4. 檢查 dev-journal 的 README.md 是否需要更新\n"
-                f"只回報需要更新的項目和你做了什麼改動（不超過 200 字），沒有需要更新的就說「記憶和 README 皆為最新」。"
-            ),
-            model="sonnet",
-            include_previous=True,
-        ),
-        WorkflowStep(
-            name="update_daily_and_commit",
-            prompt=(
-                f"根據以上所有資訊：\n"
-                f"1. 更新或建立 daily/{today}.md\n"
-                f"2. 更新 learning/INDEX.md（如果有變動）\n"
-                f"3. 執行 python3 scripts/validate.py\n"
-                f"4. 執行 python3 scripts/commit.py \"日結: {today}\"\n"
-                f"5. 回報今天的摘要（不超過 200 字）"
-            ),
-            model="opus",
-            include_previous=True,
-        ),
+            name=name,
+            prompt=build_prompt(spec, inputs_by_step[name]),
+            model=spec.model,
+            include_previous=spec.include_previous,
+        )
+        for name, spec in EVENING_SPECS.items()
     ]
+
+    # Inject completed plan items into the commit step
+    if plan_section:
+        steps[-1] = WorkflowStep(
+            name=steps[-1].name,
+            prompt=steps[-1].prompt + plan_section,
+            model=steps[-1].model,
+            include_previous=steps[-1].include_previous,
+        )
+
+    return steps
 
 
 async def run_workflow(
