@@ -83,6 +83,8 @@ plan_store = PlanStore(local_dir=str(REPO_DIR / ".local"))
 _pending_plan_record: dict[int, bool] = {}
 # Track pending plan adjust state (chat_id → True when waiting for adjust feedback)
 _pending_plan_adjust: dict[int, bool] = {}
+# Track pending plan ask state (chat_id → branch name for follow-up PR button)
+_pending_plan_ask_branch: dict[int, str] = {}
 # Marker prefix in task_ask prompt messages, used to extract branch from reply_to_message
 TASK_ASK_MARKER = "❓ 針對"
 
@@ -742,7 +744,37 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan_store.set_executing()
         await query.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_message(chat_id, "🔨 開始逐項執行...")
-        await _run_plan_items(chat_id, context)
+        await _run_next_plan_item(chat_id, context)
+        return
+    elif action.startswith("plan_pr:"):
+        branch = action[len("plan_pr:"):]
+        await query.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_message(chat_id, f"🚀 正在為 {branch} 開 PR...")
+        pr_script = str(REPO_DIR / "scripts" / "pr.sh")
+        proc = await asyncio.create_subprocess_exec(
+            "bash", pr_script, "--branch", branch,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(REPO_DIR),
+        )
+        stdout, stderr = await proc.communicate()
+        output = stdout.decode().strip() or stderr.decode().strip()
+        if proc.returncode == 0:
+            await context.bot.send_message(chat_id, f"✅ PR 已開：\n{output}")
+            # PR success → auto run next item
+            if plan_store.pending_items():
+                await _run_next_plan_item(chat_id, context)
+            elif plan_store.all_completed():
+                await context.bot.send_message(chat_id, "🎉 所有項目完成。")
+        else:
+            await context.bot.send_message(chat_id, f"❌ 開 PR 失敗：\n{output}")
+        return
+    elif action.startswith("plan_ask:"):
+        branch = action[len("plan_ask:"):]
+        await query.edit_message_reply_markup(reply_markup=None)
+        # Store branch so we can show PR button after answer
+        _pending_plan_ask_branch[chat_id] = branch
+        await context.bot.send_message(chat_id, f"❓ 針對 {branch} 提問，請輸入你的問題：")
         return
     elif action == "plan_pause":
         plan_store.pause()
@@ -963,45 +995,63 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(result[i:i + 4000])
 
 
-async def _run_plan_items(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute plan items one by one with per-item notifications."""
+async def _run_next_plan_item(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute ONE plan item, then stop and wait for user action.
+
+    Flow: execute → detect branch → record → send result with buttons → STOP.
+    Next item only runs when user presses 開PR and PR succeeds.
+    """
+    items = plan_store.parse_planned_items()
+    total = len(items) + len(plan_store.read_completed().split("\n"))  # rough total
     pending = plan_store.pending_items()
     if not pending:
-        await context.bot.send_message(chat_id, "📭 沒有待執行項目。")
+        if plan_store.all_completed():
+            await context.bot.send_message(chat_id, "🎉 所有項目完成。")
+        else:
+            await context.bot.send_message(chat_id, "📭 沒有待執行項目。")
         return
 
-    for i, item in enumerate(pending, 1):
-        if plan_store.status != PlanStatus.EXECUTING:
-            # Paused
-            await context.bot.send_message(chat_id, f"⏸️ 已暫停，完成了 {i-1}/{len(pending)} 項")
-            return
+    # Execute first pending item
+    item = pending[0]
+    parsed = plan_store.parse_planned_items()
+    task_info = parsed[0] if parsed else {"task": item.replace("- [ ]", "").strip(), "branch": None, "repo": None}
+    task_desc = task_info["task"]
+    planned_branch = task_info.get("branch") or ""
 
-        # Extract task description (strip "- [ ] " prefix)
-        task_desc = item.replace("- [ ]", "").strip()
-        await context.bot.send_message(chat_id, f"▶️ [{i}/{len(pending)}] 正在執行：{task_desc[:100]}")
+    current = len(pending)
+    idx = total - current + 1
+    await context.bot.send_message(chat_id, f"▶️ [{idx}] 正在執行：{task_desc[:100]}")
 
-        import uuid as _uuid
-        spec = PLAN_SPECS["plan_execute"]
-        prompt = build_prompt(spec, {"task": task_desc})
-        result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
+    import uuid as _uuid
+    spec = PLAN_SPECS["plan_execute"]
+    prompt = build_prompt(spec, {"task": task_desc})
+    result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
 
-        if not result.startswith("⚠️"):
-            plan_store.complete_item(task_desc[:30])
-            # Send result with PR + ask buttons
-            preview = result[:3000]
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("🚀 開 PR", callback_data=f"task_pr:{task_desc[:30]}"),
-                InlineKeyboardButton("❓ 追問", callback_data=f"task_ask:{task_desc[:30]}"),
+    if not result.startswith("⚠️"):
+        # Detect branch: use planned branch or try git branch --show-current
+        branch = planned_branch or "unknown"
+        plan_store.complete_item(task_desc[:30], branch=branch)
+
+        preview = result[:3000]
+        # Encode branch in callback_data for PR button
+        branch_safe = branch[:40]  # TG callback_data limit is 64 bytes
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🚀 開 PR", callback_data=f"plan_pr:{branch_safe}"),
+                InlineKeyboardButton("❓ 追問", callback_data=f"plan_ask:{branch_safe}"),
+            ],
+            [
                 InlineKeyboardButton("⏸️ 暫停", callback_data="plan_pause"),
-            ]])
-            await context.bot.send_message(chat_id, f"✅ [{i}/{len(pending)}] 完成\n\n{preview}", reply_markup=keyboard)
-        else:
-            await context.bot.send_message(chat_id, f"⚠️ [{i}/{len(pending)}] 失敗：{result[:500]}")
-
-    # Check if all done
-    if plan_store.all_completed():
-        archived = plan_store.archive_completed()
-        await context.bot.send_message(chat_id, "🎉 所有項目完成，計畫已歸檔。")
+            ],
+        ])
+        await context.bot.send_message(
+            chat_id,
+            f"✅ [{idx}] 完成：{task_desc[:50]}\n\n{preview}",
+            reply_markup=keyboard,
+        )
+        # ← STOP HERE. Don't run next item. Wait for button press.
+    else:
+        await context.bot.send_message(chat_id, f"⚠️ [{idx}] 失敗：{result[:500]}")
 
 
 async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1057,6 +1107,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ 調整失敗：{result[:500]}")
         else:
             await update.message.reply_text("⚠️ Opus 回覆格式不正確（沒有 checklist），請重試。")
+        return
+
+    # Intercept pending plan ask — answer question then show PR/ask buttons
+    branch = _pending_plan_ask_branch.pop(chat_id, None)
+    if branch:
+        import uuid as _uuid
+        result = await _run_claude(text, "sonnet", str(_uuid.uuid4()), resume=False)
+        preview = result[:3000] if not result.startswith("⚠️") else result[:500]
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🚀 開 PR", callback_data=f"plan_pr:{branch}"),
+                InlineKeyboardButton("❓ 追問", callback_data=f"plan_ask:{branch}"),
+            ],
+            [
+                InlineKeyboardButton("⏸️ 暫停", callback_data="plan_pause"),
+            ],
+        ])
+        await update.message.reply_text(preview, reply_markup=keyboard)
         return
 
     # Intercept reply to task_ask prompt — extract branch from replied message
