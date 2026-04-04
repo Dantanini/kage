@@ -198,7 +198,7 @@ async def _kill_stale_claude() -> None:
         logger.debug(f"_kill_stale_claude: {e}")
 
 
-async def _run_claude_once(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
+async def _run_claude_once(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None, inject_plan: bool = False) -> str:
     """Single attempt to execute claude -p and return output."""
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
@@ -218,7 +218,9 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     if not resume:
         recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
         memory_prefix = memory_store.build_context_prefix()
-        plan_prefix = plan_store.build_context_injection()
+        # Only inject plan context for interactive chat sessions; skip for
+        # workflows, course, note, task execution, and background tasks.
+        plan_prefix = plan_store.build_context_injection() if inject_plan else ""
         prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}{plan_prefix}\n{prompt}"
 
     proc = await asyncio.create_subprocess_exec(
@@ -236,12 +238,12 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     return stdout.decode().strip()
 
 
-async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None) -> str:
+async def _run_claude(prompt: str, model: str, session_id: str, resume: bool = False, cwd: str | None = None, inject_plan: bool = False) -> str:
     """Execute claude -p with retry (max MAX_RETRIES). Returns error string on final failure."""
     last_err = ""
     for attempt in range(MAX_RETRIES + 1):
         try:
-            return await _run_claude_once(prompt, model, session_id, resume=resume, cwd=cwd)
+            return await _run_claude_once(prompt, model, session_id, resume=resume, cwd=cwd, inject_plan=inject_plan)
         except Exception as e:
             last_err = str(e)
             logger.warning(f"claude attempt {attempt + 1} failed: {last_err[:200]}")
@@ -344,7 +346,7 @@ async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     typing_task = asyncio.create_task(keep_typing())
-    result = await _run_claude(prompt, "opus", session.session_id, resume=resume)
+    result = await _run_claude(prompt, "opus", session.session_id, resume=resume, inject_plan=True)
     typing_task.cancel()
 
     try:
@@ -1289,7 +1291,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     typing_task = asyncio.create_task(keep_typing())
 
-    result = await _run_claude(prompt, model, session.session_id, resume=resume)
+    result = await _run_claude(prompt, model, session.session_id, resume=resume, inject_plan=(intent == "chat"))
 
     typing_task.cancel()
 
