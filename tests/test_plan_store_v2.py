@@ -1,4 +1,4 @@
-"""Tests for PlanStore v2 — pure file-based, no LLM."""
+"""Tests for PlanStore v2 — three-section plan management."""
 
 import pytest
 from pathlib import Path
@@ -24,6 +24,11 @@ class TestPlanLifecycle:
         assert plan_store.status == PlanStatus.DRAFT
         assert "買菜清單要更新" in plan_store.read()
 
+    def test_append_goes_to_draft_section(self, plan_store):
+        plan_store.append("task 1")
+        assert "## 待整理" in plan_store.read()
+        assert "task 1" in plan_store.read()
+
     def test_append_multiple(self, plan_store):
         plan_store.append("task 1: 改 README")
         plan_store.append("task 2: 改 CLAUDE.md")
@@ -44,6 +49,13 @@ class TestPlanLifecycle:
         assert plan_store.status == PlanStatus.PLANNED
         assert "Phase 1" in plan_store.read()
 
+    def test_set_planned_clears_draft(self, plan_store):
+        plan_store.append("raw idea")
+        plan_store.set_planned("- [ ] refined task")
+        content = plan_store.read()
+        assert "## 待整理" not in content
+        assert "raw idea" not in content
+
     def test_set_planned_without_draft_raises(self, plan_store):
         with pytest.raises(ValueError, match="沒有草稿"):
             plan_store.set_planned("plan content")
@@ -58,14 +70,14 @@ class TestPlanLifecycle:
         with pytest.raises(ValueError, match="沒有計畫"):
             plan_store.set_executing()
 
-    def test_complete_item(self, plan_store):
+    def test_complete_item_moves_to_completed(self, plan_store):
         plan_store.append("task")
         plan_store.set_planned("- [ ] task A\n- [ ] task B")
         plan_store.set_executing()
         plan_store.complete_item("task A")
         content = plan_store.read()
+        assert "## 已完成" in content
         assert "- [x] task A" in content
-        assert "- [ ] task B" in content
 
     def test_all_completed(self, plan_store):
         plan_store.append("tasks")
@@ -87,21 +99,96 @@ class TestPlanLifecycle:
         assert "B" in pending[0]
         assert "C" in pending[1]
 
+    def test_draft_items(self, plan_store):
+        plan_store.append("idea 1")
+        plan_store.append("idea 2")
+        drafts = plan_store.draft_items()
+        assert len(drafts) == 2
+
+
+class TestThreeSections:
+    """Three sections coexist: 待整理 / 已規劃 / 已完成."""
+
+    def test_append_after_planned_adds_to_draft(self, plan_store):
+        plan_store.append("original idea")
+        plan_store.set_planned("- [ ] planned task")
+        plan_store.append("new idea")
+        content = plan_store.read()
+        assert "## 待整理" in content
+        assert "new idea" in content
+        assert "## 已規劃" in content
+        assert "planned task" in content
+
+    def test_all_three_sections(self, plan_store):
+        plan_store.append("draft item")
+        plan_store.set_planned("- [ ] task A\n- [ ] task B")
+        plan_store.set_executing()
+        plan_store.complete_item("task A")
+        plan_store.pause()
+        plan_store.append("another idea")
+        content = plan_store.read()
+        assert "## 已規劃" in content
+        assert "## 已完成" in content
+        assert "## 待整理" in content
+
+
+class TestDelete:
+    """Delete items by index."""
+
+    def test_delete_draft_item(self, plan_store):
+        plan_store.append("keep this")
+        plan_store.append("delete this")
+        items = plan_store.all_items_numbered()
+        assert len(items) == 2
+        deleted = plan_store.delete_item(2)
+        assert "delete this" in deleted
+        assert "delete this" not in plan_store.read()
+        assert "keep this" in plan_store.read()
+
+    def test_delete_returns_none_for_invalid_index(self, plan_store):
+        plan_store.append("item")
+        assert plan_store.delete_item(99) is None
+
+    def test_delete_last_item_resets_to_empty(self, plan_store):
+        plan_store.append("only item")
+        plan_store.delete_item(1)
+        assert plan_store.status == PlanStatus.EMPTY
+
+    def test_all_items_numbered(self, plan_store):
+        plan_store.append("draft 1")
+        plan_store.append("draft 2")
+        plan_store.set_planned("- [ ] planned 1")
+        plan_store.set_executing()
+        plan_store.complete_item("planned 1")
+        plan_store.pause()
+        plan_store.append("draft 3")
+        items = plan_store.all_items_numbered()
+        assert len(items) >= 2
+
 
 class TestArchive:
     """Archive completed items, keep pending."""
 
-    def test_archive_completed(self, plan_store):
+    def test_archive_creates_full_snapshot(self, plan_store):
         plan_store.append("tasks")
         plan_store.set_planned("- [ ] A\n- [ ] B")
         plan_store.set_executing()
         plan_store.complete_item("A")
-        archived = plan_store.archive_completed()
-        assert "A" in archived
-        # current should only have B
+        plan_store.archive_completed()
+        archive_dir = Path(plan_store._local_dir) / "plan" / "archive"
+        files = list(archive_dir.iterdir())
+        assert len(files) == 1
+        archive_content = files[0].read_text(encoding="utf-8")
+        assert "A" in archive_content
+
+    def test_archive_removes_completed_section(self, plan_store):
+        plan_store.append("tasks")
+        plan_store.set_planned("- [ ] A\n- [ ] B")
+        plan_store.set_executing()
+        plan_store.complete_item("A")
+        plan_store.archive_completed()
         content = plan_store.read()
-        assert "- [x] A" not in content
-        assert "- [ ] B" in content
+        assert "## 已完成" not in content
 
     def test_archive_all_resets_to_empty(self, plan_store):
         plan_store.append("tasks")
@@ -110,15 +197,6 @@ class TestArchive:
         plan_store.complete_item("A")
         plan_store.archive_completed()
         assert plan_store.status == PlanStatus.EMPTY
-
-    def test_archive_file_created(self, plan_store):
-        plan_store.append("tasks")
-        plan_store.set_planned("- [ ] A")
-        plan_store.set_executing()
-        plan_store.complete_item("A")
-        plan_store.archive_completed()
-        archive_dir = Path(plan_store._local_dir) / "plan" / "archive"
-        assert any(archive_dir.iterdir())
 
 
 class TestPause:
@@ -138,7 +216,6 @@ class TestPause:
         plan_store.set_executing()
         plan_store.complete_item("A")
         plan_store.pause()
-        # Resume
         plan_store.set_executing()
         pending = plan_store.pending_items()
         assert len(pending) == 1

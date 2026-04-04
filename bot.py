@@ -456,7 +456,7 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 
-def _plan_buttons_for_status(status: PlanStatus) -> InlineKeyboardMarkup:
+def _plan_buttons_for_status(status: PlanStatus, has_draft: bool = False) -> InlineKeyboardMarkup:
     """Generate buttons based on current plan status."""
     if status == PlanStatus.EMPTY:
         return InlineKeyboardMarkup([
@@ -470,12 +470,14 @@ def _plan_buttons_for_status(status: PlanStatus) -> InlineKeyboardMarkup:
             ],
         ])
     elif status == PlanStatus.PLANNED:
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔧 調整", callback_data="plan_adjust"),
-                InlineKeyboardButton("🔨 執行", callback_data="plan_execute"),
-            ],
-        ])
+        buttons = [
+            InlineKeyboardButton("📝 撰寫", callback_data="plan_write"),
+        ]
+        if has_draft:
+            buttons.append(InlineKeyboardButton("🧠 規劃", callback_data="plan_analyze"))
+        buttons.append(InlineKeyboardButton("🔧 調整", callback_data="plan_adjust"))
+        buttons.append(InlineKeyboardButton("🔨 執行", callback_data="plan_execute"))
+        return InlineKeyboardMarkup([buttons])
     elif status == PlanStatus.EXECUTING:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸️ 暫停", callback_data="plan_pause")],
@@ -508,7 +510,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = plan_store.status
         content = plan_store.read()
         preview = content[:2000] if len(content) > 2000 else content
-        keyboard = _plan_buttons_for_status(status)
+        keyboard = _plan_buttons_for_status(status, has_draft=bool(plan_store.draft_items()))
         await update.message.reply_text(
             f"✅ 已記錄\n\n{preview}",
             reply_markup=keyboard,
@@ -520,7 +522,7 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_text = _plan_status_text(status)
     content = plan_store.read()
     preview = content[:2000] if content else ""
-    keyboard = _plan_buttons_for_status(status)
+    keyboard = _plan_buttons_for_status(status, has_draft=bool(plan_store.draft_items()))
 
     if preview:
         await update.message.reply_text(
@@ -747,7 +749,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan_store.pause()
         content = plan_store.read()
         preview = content[:2000] if content else ""
-        keyboard = _plan_buttons_for_status(plan_store.status)
+        keyboard = _plan_buttons_for_status(plan_store.status, has_draft=bool(plan_store.draft_items()))
         await query.edit_message_text(
             f"⏸️ 已暫停\n\n{preview}",
             reply_markup=keyboard,
@@ -1029,7 +1031,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = plan_store.status
         content = plan_store.read()
         preview = content[:2000] if len(content) > 2000 else content
-        keyboard = _plan_buttons_for_status(status)
+        keyboard = _plan_buttons_for_status(status, has_draft=bool(plan_store.draft_items()))
         await update.message.reply_text(
             f"✅ 已記錄\n\n{preview}",
             reply_markup=keyboard,
