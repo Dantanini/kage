@@ -47,6 +47,35 @@ class TestWorkflowSteps:
         assert "memory" in memory_step.prompt.lower() or "記憶" in memory_step.prompt
         assert "README" in memory_step.prompt
 
+    def test_evening_first_step_no_previous(self):
+        steps = build_evening_steps("2026-04-01")
+        assert steps[0].include_previous is False
+
+    def test_evening_last_step_is_opus(self):
+        steps = build_evening_steps("2026-04-01")
+        assert steps[-1].model == "opus"
+
+    def test_evening_last_step_includes_previous(self):
+        steps = build_evening_steps("2026-04-01")
+        assert steps[-1].include_previous is True
+
+    def test_evening_without_completed_items_no_plan_section(self):
+        steps = build_evening_steps("2026-04-01")
+        commit_step = steps[2]
+        assert "計畫項目" not in commit_step.prompt
+
+    def test_evening_with_completed_items_injected_into_commit_step(self):
+        steps = build_evening_steps("2026-04-01", completed_items="- [x] 寫測試\n- [x] 修 bug")
+        commit_step = steps[2]
+        assert "計畫項目" in commit_step.prompt
+        assert "寫測試" in commit_step.prompt
+        assert "修 bug" in commit_step.prompt
+
+    def test_evening_completed_items_does_not_affect_gather_step(self):
+        steps = build_evening_steps("2026-04-01", completed_items="- [x] 寫測試")
+        gather_step = steps[0]
+        assert "計畫項目" not in gather_step.prompt
+
 
 class TestRunWorkflow:
     """Test workflow execution chain."""

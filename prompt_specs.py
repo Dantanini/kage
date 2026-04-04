@@ -21,6 +21,7 @@ class PromptSpec:
     instruction: str  # Template with {placeholders} for inputs
     input_keys: list[str]  # Required input names
     output_validator: Callable[[str], bool] | None = None
+    include_previous: bool = True  # Whether to include prior step results in prompt
 
     def validate_output(self, output: str) -> bool:
         if self.output_validator is None:
@@ -89,5 +90,104 @@ PLAN_SPECS: dict[str, PromptSpec] = {
         ),
         input_keys=["task"],
         # Execute accepts any output — the task itself is the validation
+    ),
+}
+
+
+# ── /morning specs ──
+
+MORNING_SPECS: dict[str, PromptSpec] = {
+    "gather_focus": PromptSpec(
+        action="MORNING_FOCUS",
+        model="sonnet",
+        instruction=(
+            "[系統] 今天是 {today}。\n"
+            "讀 profile/current-focus.md，回傳目前三條主線的重點摘要（不超過 200 字）。"
+        ),
+        input_keys=["today"],
+        include_previous=False,
+    ),
+    "gather_recent": PromptSpec(
+        action="MORNING_RECENT",
+        model="sonnet",
+        instruction=(
+            "讀最近 3 天的 daily/*.md，回傳近期進度摘要（不超過 200 字）。"
+            "有哪些完成了、哪些卡住了？"
+        ),
+        input_keys=[],
+        include_previous=False,
+    ),
+    "synthesize": PromptSpec(
+        action="MORNING_SYNTHESIZE",
+        model="opus",
+        instruction=(
+            "根據以上主線和近期進度，給 Dante 今日建議：\n"
+            "1. 今天最重要的 1-2 件事（根據主線優先順序）\n"
+            "2. 學習可以從哪裡繼續\n"
+            "3. 有沒有什麼卡住的需要處理\n"
+            "請簡潔，不超過 300 字。"
+        ),
+        input_keys=[],
+        include_previous=True,
+    ),
+}
+
+
+# ── /evening specs ──
+
+EVENING_SPECS: dict[str, PromptSpec] = {
+    "gather_today": PromptSpec(
+        action="EVENING_GATHER",
+        model="sonnet",
+        instruction=(
+            "[系統] 今天是 {today}。\n"
+            "讀今天的 daily/{today}.md（如果存在）和 inbox/raw-notes.md，"
+            "回傳今天做了什麼的摘要（不超過 200 字）。"
+        ),
+        input_keys=["today"],
+        include_previous=False,
+    ),
+    "update_memory_and_readme": PromptSpec(
+        action="EVENING_MEMORY",
+        model="sonnet",
+        instruction=(
+            "根據以上摘要和今天的對話，執行以下檢查和更新：\n"
+            "1. 更新 memory/kage-memory/ 底下的檔案（如果有新的 lessons、task 進度變化）\n"
+            "2. 檢查對使用者有沒有新的觀察或評估值得記錄\n"
+            "3. 檢查 ~/kage/README.md 是否跟現有功能一致（指令表、test 數量、架構描述）\n"
+            "4. 檢查 dev-journal 的 README.md 是否需要更新\n"
+            "只回報需要更新的項目和你做了什麼改動（不超過 200 字），沒有需要更新的就說「記憶和 README 皆為最新」。"
+        ),
+        input_keys=[],
+        include_previous=True,
+    ),
+    "update_daily_and_commit": PromptSpec(
+        action="EVENING_COMMIT",
+        model="opus",
+        instruction=(
+            "根據以上所有資訊：\n"
+            "1. 更新或建立 daily/{today}.md\n"
+            "2. 更新 learning/INDEX.md（如果有變動）\n"
+            "3. 執行 python3 scripts/validate.py\n"
+            "4. 執行 python3 scripts/commit.py \"日結: {today}\"\n"
+            "5. 回報今天的摘要（不超過 200 字）"
+        ),
+        input_keys=["today"],
+        include_previous=True,
+    ),
+}
+
+
+# ── /course specs ──
+
+COURSE_SPECS: dict[str, PromptSpec] = {
+    "course_flush": PromptSpec(
+        action="COURSE_FLUSH",
+        model="opus",
+        instruction=(
+            "以下是這次學習對話的完整問答紀錄。請整理成結構化課程筆記，"
+            "存到 learning/ 對應的檔案，並更新 learning/INDEX.md。\n\n{qa_log}"
+        ),
+        input_keys=["qa_log"],
     ),
 }
