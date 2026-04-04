@@ -148,6 +148,7 @@ def _find_claude() -> str:
 
 
 MAX_RETRIES = 2
+CLAUDE_TIMEOUT_SECONDS = 300  # 5 minutes — prevent bot from hanging indefinitely
 QA_LOG_FLUSH_SIZE = 20_000  # chars
 
 
@@ -228,7 +229,15 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
         stderr=asyncio.subprocess.PIPE,
         cwd=work_dir,
     )
-    stdout, stderr = await proc.communicate(input=prompt.encode())
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=prompt.encode()),
+            timeout=CLAUDE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
 
     if proc.returncode != 0:
         raise RuntimeError(stderr.decode().strip())
