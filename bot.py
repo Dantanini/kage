@@ -203,10 +203,9 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
 
-    # bypassPermissions: subprocess mode mixes permission prompts into stdout.
-    # Compensating controls: single-admin auth, CLAUDE.md rules, cwd locked to predefined repos,
-    # GitHub branch protection on all remote branches.
-    cmd = [claude_bin, "-p", "--model", model, "--permission-mode", "bypassPermissions"]
+    # acceptEdits + allowedTools (.claude/settings.json) limits permissions to
+    # the 6 tools the bot actually uses (Bash, Read, Edit, Write, Grep, Glob).
+    cmd = [claude_bin, "-p", "--model", model, "--permission-mode", "acceptEdits"]
     if resume:
         cmd.extend(["--resume", session_id])
     else:
