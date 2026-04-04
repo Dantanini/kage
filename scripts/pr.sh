@@ -48,6 +48,11 @@ for p in $PROTECTED; do
     fi
 done
 
+# Auto-add --fill in non-interactive mode (e.g. called from bot subprocess)
+if [ ! -t 0 ]; then
+    GH_ARGS+=("--fill")
+fi
+
 if [ "$DRY_RUN" = true ]; then
     echo "gh pr create --base develop ${GH_ARGS[*]:-}"
     exit 0
