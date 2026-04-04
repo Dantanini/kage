@@ -23,7 +23,7 @@ from telegram.ext import (
 
 from memory import MemoryStore
 from plan_v2 import PlanStore, PlanStatus
-from prompt_specs import PLAN_SPECS, build_prompt
+from prompt_specs import PLAN_SPECS, COURSE_SPECS, build_prompt
 from router import route
 from session import SessionManager
 from tg_notify import build_memory_save_message, send_telegram_message
@@ -269,10 +269,7 @@ async def _flush_qa_log(session, cwd: str | None = None) -> str | None:
     log_text = "\n\n---\n\n".join(
         f"**問：** {q}\n\n**答：** {a}" for q, a in session.qa_log
     )
-    prompt = (
-        "以下是這次學習對話的完整問答紀錄。請整理成結構化課程筆記，"
-        "存到 learning/ 對應的檔案，並更新 learning/INDEX.md。\n\n" + log_text
-    )
+    prompt = build_prompt(COURSE_SPECS["course_flush"], {"qa_log": log_text})
     result = await _run_claude(prompt, session.model, str(_uuid.uuid4()), resume=False, cwd=cwd)
     session.qa_log.clear()
     return result

@@ -107,7 +107,6 @@ MORNING_SPECS: dict[str, PromptSpec] = {
         input_keys=["today"],
         include_previous=False,
     ),
-<<<<<<< HEAD
     "gather_recent": PromptSpec(
         action="MORNING_RECENT",
         model="sonnet",
@@ -175,5 +174,20 @@ EVENING_SPECS: dict[str, PromptSpec] = {
         ),
         input_keys=["today"],
         include_previous=True,
+    ),
+}
+
+
+# ── /course specs ──
+
+COURSE_SPECS: dict[str, PromptSpec] = {
+    "course_flush": PromptSpec(
+        action="COURSE_FLUSH",
+        model="opus",
+        instruction=(
+            "以下是這次學習對話的完整問答紀錄。請整理成結構化課程筆記，"
+            "存到 learning/ 對應的檔案，並更新 learning/INDEX.md。\n\n{qa_log}"
+        ),
+        input_keys=["qa_log"],
     ),
 }

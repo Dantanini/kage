@@ -1,7 +1,7 @@
 """Tests for prompt_specs — PromptSpec framework + /plan specs."""
 
 import pytest
-from prompt_specs import PromptSpec, PLAN_SPECS, MORNING_SPECS, EVENING_SPECS, build_prompt
+from prompt_specs import PromptSpec, PLAN_SPECS, MORNING_SPECS, EVENING_SPECS, COURSE_SPECS, build_prompt
 
 
 class TestPromptSpec:
@@ -213,3 +213,30 @@ class TestEveningSpecs:
     def test_all_specs_have_instructions(self):
         for name, spec in EVENING_SPECS.items():
             assert spec.instruction, f"{name} has empty instruction"
+
+
+class TestCourseSpecs:
+    """Verify /course specs exist and are correct."""
+
+    def test_course_flush_exists(self):
+        spec = COURSE_SPECS["course_flush"]
+        assert spec.model == "opus"
+        assert "qa_log" in spec.input_keys
+
+    def test_course_flush_accepts_any_output(self):
+        spec = COURSE_SPECS["course_flush"]
+        assert spec.validate_output("已更新 learning/notes.md") is True
+
+    def test_course_flush_prompt_contains_qa_log(self):
+        spec = COURSE_SPECS["course_flush"]
+        prompt = build_prompt(spec, {"qa_log": "Q: foo\nA: bar"})
+        assert "Q: foo\nA: bar" in prompt
+
+    def test_course_flush_prompt_mentions_learning_dir(self):
+        spec = COURSE_SPECS["course_flush"]
+        assert "learning/" in spec.instruction
+
+    def test_course_flush_missing_qa_log_raises(self):
+        spec = COURSE_SPECS["course_flush"]
+        with pytest.raises(KeyError):
+            build_prompt(spec, {})
