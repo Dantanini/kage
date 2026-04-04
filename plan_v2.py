@@ -1,11 +1,15 @@
-"""PlanStore v2 — pure file-based plan management, no LLM needed.
+"""PlanStore v2 — three-file plan management, no LLM needed.
 
-Plans are stored in .local/plan/ (git-ignored) to avoid leaking
-private content to public repos. Completed plans are archived
-and can be summarized into dev-journal by /evening workflow.
+Three separate files, program-controlled read/write boundaries:
+  draft.md      — user's raw input (pure append, LLM never touches)
+  planned.md    — Opus-produced ordered checklist (LLM reads for execution)
+  completed.md  — finished items (program moves here, LLM never touches)
+
+Stored in .local/plan/ (git-ignored) to avoid leaking private content.
 """
 
 import logging
+import shutil
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -20,7 +24,6 @@ class PlanStatus(Enum):
     EXECUTING = "executing"
 
 
-# Workflow instructions prepended to every plan injection.
 PLAN_INSTRUCTIONS = """\
 ## Instructions
 - 每個 task 開獨立 feature branch from develop
@@ -31,8 +34,24 @@ PLAN_INSTRUCTIONS = """\
 """
 
 
+def _read_file(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _write_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.strip() + "\n" if content.strip() else "", encoding="utf-8")
+
+
+def _clear_file(path: Path) -> None:
+    if path.exists():
+        path.write_text("", encoding="utf-8")
+
+
 class PlanStore:
-    """Manages plan lifecycle: draft → planned → executing → archived."""
+    """Manages plan lifecycle with three separate files."""
 
     def __init__(self, local_dir: str):
         self._local_dir = local_dir
@@ -42,12 +61,22 @@ class PlanStore:
         self._archive_dir.mkdir(parents=True, exist_ok=True)
 
     @property
-    def _current_file(self) -> Path:
-        return self._plan_dir / "current.md"
+    def _draft_file(self) -> Path:
+        return self._plan_dir / "draft.md"
+
+    @property
+    def _planned_file(self) -> Path:
+        return self._plan_dir / "planned.md"
+
+    @property
+    def _completed_file(self) -> Path:
+        return self._plan_dir / "completed.md"
 
     @property
     def _status_file(self) -> Path:
         return self._plan_dir / "status"
+
+    # ── Status ──
 
     @property
     def status(self) -> PlanStatus:
@@ -62,126 +91,183 @@ class PlanStore:
     def _set_status(self, status: PlanStatus) -> None:
         self._status_file.write_text(status.value, encoding="utf-8")
 
+    def _update_status_from_content(self) -> None:
+        has_planned = bool(self.pending_items())
+        has_draft = bool(self.draft_items())
+        if has_planned:
+            if self.status != PlanStatus.EXECUTING:
+                self._set_status(PlanStatus.PLANNED)
+        elif has_draft:
+            self._set_status(PlanStatus.DRAFT)
+        else:
+            self._status_file.unlink(missing_ok=True)
+
     def has_plan(self) -> bool:
-        return self._current_file.exists() and self._current_file.read_text(encoding="utf-8").strip() != ""
+        return (
+            bool(_read_file(self._draft_file))
+            or bool(_read_file(self._planned_file))
+            or bool(_read_file(self._completed_file))
+        )
+
+    # ── Read ──
+
+    def read_draft(self) -> str:
+        return _read_file(self._draft_file)
+
+    def read_planned(self) -> str:
+        return _read_file(self._planned_file)
+
+    def read_completed(self) -> str:
+        return _read_file(self._completed_file)
 
     def read(self) -> str:
-        if not self._current_file.exists():
-            return ""
-        return self._current_file.read_text(encoding="utf-8").strip()
+        """Read all three files combined (for display)."""
+        parts = []
+        draft = self.read_draft()
+        planned = self.read_planned()
+        completed = self.read_completed()
+        if draft:
+            parts.append(f"## 待整理\n{draft}")
+        if planned:
+            parts.append(f"## 已規劃\n{planned}")
+        if completed:
+            parts.append(f"## 已完成\n{completed}")
+        return "\n\n".join(parts)
+
+    # ── Write ──
 
     def append(self, content: str) -> None:
-        """Append user input to draft. No LLM involved."""
-        existing = self.read()
-        today = date.today().isoformat()
-        if existing:
-            new = existing + f"\n- {content.strip()}\n"
-        else:
-            new = f"# Plan ({today})\n\n## 待整理\n- {content.strip()}\n"
-        self._current_file.write_text(new, encoding="utf-8")
+        """Append to draft.md. No LLM involved."""
+        existing = _read_file(self._draft_file)
+        new_line = f"- {content.strip()}"
+        new_content = f"{existing}\n{new_line}" if existing else new_line
+        _write_file(self._draft_file, new_content)
         if self.status == PlanStatus.EMPTY:
             self._set_status(PlanStatus.DRAFT)
 
     def set_planned(self, plan_content: str) -> None:
-        """Opus has analyzed and produced an ordered checklist."""
+        """Write Opus output to planned.md, clear draft.md."""
         if self.status == PlanStatus.EMPTY:
             raise ValueError("沒有草稿可以規劃")
-        existing = self.read()
-        today = date.today().isoformat()
-        full = f"# Plan ({today})\n\n{plan_content.strip()}\n"
-        self._current_file.write_text(full, encoding="utf-8")
+        _write_file(self._planned_file, plan_content)
+        _clear_file(self._draft_file)
         self._set_status(PlanStatus.PLANNED)
 
     def set_executing(self) -> None:
-        """Start execution."""
         if self.status not in (PlanStatus.PLANNED,):
             raise ValueError("沒有計畫可以執行")
         self._set_status(PlanStatus.EXECUTING)
 
     def pause(self) -> None:
-        """Pause execution, go back to planned state."""
         self._set_status(PlanStatus.PLANNED)
 
     def complete_item(self, item_substring: str) -> None:
-        """Mark a checklist item as done by matching substring."""
-        content = self.read()
-        lines = content.split("\n")
-        for i, line in enumerate(lines):
-            if "- [ ]" in line and item_substring in line:
-                lines[i] = line.replace("- [ ]", "- [x]", 1)
-                break
-        self._current_file.write_text("\n".join(lines), encoding="utf-8")
+        """Move a matching item from planned.md to completed.md."""
+        planned = _read_file(self._planned_file)
+        lines = planned.split("\n")
+        completed_line = None
+
+        new_lines = []
+        for line in lines:
+            if completed_line is None and "- [ ]" in line and item_substring in line:
+                completed_line = line.replace("- [ ]", "- [x]", 1)
+            else:
+                new_lines.append(line)
+
+        _write_file(self._planned_file, "\n".join(new_lines))
+
+        if completed_line:
+            existing_completed = _read_file(self._completed_file)
+            new_completed = f"{existing_completed}\n{completed_line}" if existing_completed else completed_line
+            _write_file(self._completed_file, new_completed)
 
     def all_completed(self) -> bool:
-        """Check if all checklist items are done."""
-        content = self.read()
-        return "- [x]" in content and "- [ ]" not in content
+        planned = _read_file(self._planned_file)
+        return "- [ ]" not in planned
 
     def pending_items(self) -> list[str]:
-        """Get list of uncompleted items."""
-        content = self.read()
-        return [
-            line.strip()
-            for line in content.split("\n")
-            if "- [ ]" in line
-        ]
+        planned = _read_file(self._planned_file)
+        return [l.strip() for l in planned.split("\n") if "- [ ]" in l]
+
+    def draft_items(self) -> list[str]:
+        draft = _read_file(self._draft_file)
+        return [l.strip() for l in draft.split("\n") if l.strip().startswith("- ")]
+
+    # ── Delete ──
+
+    def all_items_numbered(self) -> list[tuple[str, str, int]]:
+        """Returns [(file_type, line_text, global_index), ...]"""
+        items = []
+        idx = 0
+        for file_type, path in [("draft", self._draft_file), ("planned", self._planned_file), ("completed", self._completed_file)]:
+            content = _read_file(path)
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.startswith("- "):
+                    idx += 1
+                    items.append((file_type, line, idx))
+        return items
+
+    def delete_item(self, index: int) -> str | None:
+        target = None
+        for file_type, line, idx in self.all_items_numbered():
+            if idx == index:
+                target = (file_type, line)
+                break
+        if not target:
+            return None
+
+        file_type, line_text = target
+        path = {"draft": self._draft_file, "planned": self._planned_file, "completed": self._completed_file}[file_type]
+        content = _read_file(path)
+        lines = content.split("\n")
+        new_lines = [l for l in lines if l.strip() != line_text]
+        _write_file(path, "\n".join(new_lines))
+        self._update_status_from_content()
+        return line_text
+
+    # ── Archive ──
 
     def archive_completed(self) -> str:
-        """Move completed items to archive, keep pending in current.
-        Returns archived content. If all done, reset to EMPTY.
-        """
-        content = self.read()
-        lines = content.split("\n")
+        """Archive all three files as snapshot, clear completed.md."""
+        completed = self.read_completed()
 
-        completed = []
-        remaining = []
-        for line in lines:
-            if "- [x]" in line:
-                completed.append(line)
-            else:
-                remaining.append(line)
+        # Create snapshot directory
+        today = date.today().isoformat()
+        ts = datetime.now().strftime("%H%M%S")
+        snapshot_dir = self._archive_dir / f"{today}-{ts}"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write archive
-        archived_text = "\n".join(completed)
-        if archived_text.strip():
-            today = date.today().isoformat()
-            ts = datetime.now().strftime("%H%M%S")
-            archive_file = self._archive_dir / f"{today}-{ts}.md"
-            archive_file.write_text(
-                f"# Archived Plan ({today})\n\n{archived_text}\n",
-                encoding="utf-8",
-            )
+        # Copy all files to snapshot
+        for src in (self._draft_file, self._planned_file, self._completed_file):
+            if src.exists() and _read_file(src):
+                shutil.copy2(src, snapshot_dir / src.name)
 
-        # Update current
-        remaining_text = "\n".join(remaining).strip()
-        has_pending = any("- [ ]" in line for line in remaining)
+        # Clear completed
+        _clear_file(self._completed_file)
 
-        if has_pending:
-            self._current_file.write_text(remaining_text + "\n", encoding="utf-8")
-        else:
-            # All done, clean up
-            self._current_file.unlink(missing_ok=True)
-            self._status_file.unlink(missing_ok=True)
+        # Update status
+        self._update_status_from_content()
+        return completed
 
-        return archived_text
+    # ── Context injection ──
 
     def build_context_injection(self) -> str:
-        """Build a context block for prompt injection."""
-        content = self.read()
-        if not content:
+        if self.status == PlanStatus.EMPTY:
             return ""
 
         if self.status in (PlanStatus.PLANNED, PlanStatus.EXECUTING):
+            planned = self.read_planned()
             return (
                 f"[Session 計畫]\n"
                 f"{PLAN_INSTRUCTIONS}\n"
-                f"{content}\n"
+                f"{planned}\n"
                 f"[/Session 計畫]\n\n"
             )
         else:
-            # Draft — just show what's been collected
+            draft = self.read_draft()
             return (
                 f"[計畫草稿 — 尚未規劃]\n"
-                f"{content}\n"
+                f"{draft}\n"
                 f"[/計畫草稿]\n\n"
             )
