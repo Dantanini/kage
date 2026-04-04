@@ -1,7 +1,7 @@
 """Tests for prompt_specs — PromptSpec framework + /plan specs."""
 
 import pytest
-from prompt_specs import PromptSpec, PLAN_SPECS, MORNING_SPECS, build_prompt
+from prompt_specs import PromptSpec, PLAN_SPECS, MORNING_SPECS, EVENING_SPECS, build_prompt
 
 
 class TestPromptSpec:
@@ -174,4 +174,42 @@ class TestMorningSpecs:
 
     def test_all_morning_specs_have_instructions(self):
         for name, spec in MORNING_SPECS.items():
+            assert spec.instruction, f"{name} has empty instruction"
+
+
+class TestEveningSpecs:
+    """Verify /evening specific specs exist and are correct."""
+
+    def test_has_three_steps(self):
+        assert len(EVENING_SPECS) == 3
+
+    def test_gather_today_exists(self):
+        spec = EVENING_SPECS["gather_today"]
+        assert spec.model == "sonnet"
+        assert "today" in spec.input_keys
+        assert spec.include_previous is False
+
+    def test_update_memory_and_readme_exists(self):
+        spec = EVENING_SPECS["update_memory_and_readme"]
+        assert spec.model == "sonnet"
+        assert spec.include_previous is True
+
+    def test_update_daily_and_commit_exists(self):
+        spec = EVENING_SPECS["update_daily_and_commit"]
+        assert spec.model == "opus"
+        assert "today" in spec.input_keys
+        assert spec.include_previous is True
+
+    def test_gather_today_prompt_includes_date(self):
+        spec = EVENING_SPECS["gather_today"]
+        prompt = build_prompt(spec, {"today": "2026-04-04"})
+        assert "2026-04-04" in prompt
+
+    def test_update_daily_prompt_includes_date(self):
+        spec = EVENING_SPECS["update_daily_and_commit"]
+        prompt = build_prompt(spec, {"today": "2026-04-04"})
+        assert "2026-04-04" in prompt
+
+    def test_all_specs_have_instructions(self):
+        for name, spec in EVENING_SPECS.items():
             assert spec.instruction, f"{name} has empty instruction"

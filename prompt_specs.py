@@ -107,6 +107,7 @@ MORNING_SPECS: dict[str, PromptSpec] = {
         input_keys=["today"],
         include_previous=False,
     ),
+<<<<<<< HEAD
     "gather_recent": PromptSpec(
         action="MORNING_RECENT",
         model="sonnet",
@@ -128,6 +129,51 @@ MORNING_SPECS: dict[str, PromptSpec] = {
             "請簡潔，不超過 300 字。"
         ),
         input_keys=[],
+        include_previous=True,
+    ),
+}
+
+
+# ── /evening specs ──
+
+EVENING_SPECS: dict[str, PromptSpec] = {
+    "gather_today": PromptSpec(
+        action="EVENING_GATHER",
+        model="sonnet",
+        instruction=(
+            "[系統] 今天是 {today}。\n"
+            "讀今天的 daily/{today}.md（如果存在）和 inbox/raw-notes.md，"
+            "回傳今天做了什麼的摘要（不超過 200 字）。"
+        ),
+        input_keys=["today"],
+        include_previous=False,
+    ),
+    "update_memory_and_readme": PromptSpec(
+        action="EVENING_MEMORY",
+        model="sonnet",
+        instruction=(
+            "根據以上摘要和今天的對話，執行以下檢查和更新：\n"
+            "1. 更新 memory/kage-memory/ 底下的檔案（如果有新的 lessons、task 進度變化）\n"
+            "2. 檢查對使用者有沒有新的觀察或評估值得記錄\n"
+            "3. 檢查 ~/kage/README.md 是否跟現有功能一致（指令表、test 數量、架構描述）\n"
+            "4. 檢查 dev-journal 的 README.md 是否需要更新\n"
+            "只回報需要更新的項目和你做了什麼改動（不超過 200 字），沒有需要更新的就說「記憶和 README 皆為最新」。"
+        ),
+        input_keys=[],
+        include_previous=True,
+    ),
+    "update_daily_and_commit": PromptSpec(
+        action="EVENING_COMMIT",
+        model="opus",
+        instruction=(
+            "根據以上所有資訊：\n"
+            "1. 更新或建立 daily/{today}.md\n"
+            "2. 更新 learning/INDEX.md（如果有變動）\n"
+            "3. 執行 python3 scripts/validate.py\n"
+            "4. 執行 python3 scripts/commit.py \"日結: {today}\"\n"
+            "5. 回報今天的摘要（不超過 200 字）"
+        ),
+        input_keys=["today"],
         include_previous=True,
     ),
 }

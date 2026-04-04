@@ -47,6 +47,18 @@ class TestWorkflowSteps:
         assert "memory" in memory_step.prompt.lower() or "記憶" in memory_step.prompt
         assert "README" in memory_step.prompt
 
+    def test_evening_first_step_no_previous(self):
+        steps = build_evening_steps("2026-04-01")
+        assert steps[0].include_previous is False
+
+    def test_evening_last_step_is_opus(self):
+        steps = build_evening_steps("2026-04-01")
+        assert steps[-1].model == "opus"
+
+    def test_evening_last_step_includes_previous(self):
+        steps = build_evening_steps("2026-04-01")
+        assert steps[-1].include_previous is True
+
 
 class TestRunWorkflow:
     """Test workflow execution chain."""
