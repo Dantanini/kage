@@ -512,6 +512,64 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, reply_markup=keyboard)
 
 
+def _build_plan_recovery() -> tuple[str, InlineKeyboardMarkup] | None:
+    """Build recovery message + buttons based on plan state after restart.
+
+    Returns (message, keyboard) or None if no plan to recover.
+    """
+    status = plan_store.status
+    if status == PlanStatus.EMPTY:
+        return None
+
+    if status in (PlanStatus.EXECUTING, PlanStatus.PLANNED):
+        pending = plan_store.pending_items()
+        completed_text = plan_store.read_completed()
+        completed_count = len([l for l in completed_text.split("\n") if "- [x]" in l]) if completed_text else 0
+        pending_count = len(pending)
+
+        # Get next task description
+        parsed = plan_store.parse_planned_items()
+        next_task = parsed[0]["task"][:80] if parsed else "（無法讀取）"
+
+        if status == PlanStatus.EXECUTING:
+            msg = (
+                f"⚠️ 重啟前有正在執行的計畫\n\n"
+                f"進度：{completed_count} 完成 / {pending_count} 待執行\n"
+                f"下一項：{next_task}"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("▶️ 繼續執行", callback_data="plan_execute"),
+                    InlineKeyboardButton("⏸️ 暫停", callback_data="plan_pause"),
+                ],
+                [
+                    InlineKeyboardButton("📋 查看計畫", callback_data="plan_view"),
+                ],
+            ])
+        else:  # PLANNED
+            msg = (
+                f"📋 有已規劃的計畫（{pending_count} 項待執行）\n"
+                f"第一項：{next_task}"
+            )
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔨 開始執行", callback_data="plan_execute"),
+                    InlineKeyboardButton("📋 查看", callback_data="plan_view"),
+                ],
+            ])
+        return msg, keyboard
+
+    if status == PlanStatus.DRAFT:
+        draft_items = plan_store.draft_items()
+        msg = f"📝 有 {len(draft_items)} 條未整理的草稿"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 查看", callback_data="plan_view")],
+        ])
+        return msg, keyboard
+
+    return None
+
+
 def _plan_buttons_for_status(status: PlanStatus, has_draft: bool = False) -> InlineKeyboardMarkup:
     """Generate buttons based on current plan status."""
     if status == PlanStatus.EMPTY:
@@ -1345,7 +1403,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(app: Application):
-    """Set bot commands menu and send restart notification if applicable."""
+    """Set bot commands menu, send restart notification, and recover plan state."""
     notify_file = REPO_DIR / ".restart_notify"
     if notify_file.exists():
         try:
@@ -1355,6 +1413,16 @@ async def post_init(app: Application):
             logger.warning(f"Failed to send restart notification: {e}")
         finally:
             notify_file.unlink(missing_ok=True)
+
+    # Recover plan state — notify admin if there's an interrupted plan
+    recovery = _build_plan_recovery()
+    if recovery:
+        msg, keyboard = recovery
+        try:
+            await app.bot.send_message(ADMIN_ID, msg, reply_markup=keyboard)
+            logger.info(f"Plan recovery notification sent (status={plan_store.status.value})")
+        except Exception as e:
+            logger.warning(f"Failed to send plan recovery: {e}")
 
     commands = [
         BotCommand("start", "顯示指令列表"),

@@ -147,7 +147,8 @@ class TestRestartNotify:
         mock_app.bot.set_my_commands = AsyncMock()
         mock_app.bot.send_message = AsyncMock()
 
-        with patch.object(bot, "REPO_DIR", tmp_path):
+        with patch.object(bot, "REPO_DIR", tmp_path), \
+             patch.object(bot, "_build_plan_recovery", return_value=None):
             await bot.post_init(mock_app)
 
         mock_app.bot.send_message.assert_called_once()
@@ -164,7 +165,8 @@ class TestRestartNotify:
         mock_app.bot.set_my_commands = AsyncMock()
         mock_app.bot.send_message = AsyncMock()
 
-        with patch.object(bot, "REPO_DIR", tmp_path):
+        with patch.object(bot, "REPO_DIR", tmp_path), \
+             patch.object(bot, "_build_plan_recovery", return_value=None):
             await bot.post_init(mock_app)
 
         mock_app.bot.send_message.assert_not_called()
