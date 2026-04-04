@@ -203,13 +203,10 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
 
-    # NOTE: --dangerously-skip-permissions is required because in subprocess mode,
-    # Claude CLI's permission prompts get mixed into stdout as plain text.
-    # Compensating controls: single-admin auth (bot.py:_check_auth),
-    # CLAUDE.md operation rules, and cwd locked to predefined repos only.
-    # GitHub branch protection is enabled on all remote branches.
-    # TODO: migrate to --permission-mode allowedTools when CLI supports clean stdout.
-    cmd = [claude_bin, "-p", "--model", model, "--dangerously-skip-permissions"]
+    # bypassPermissions: subprocess mode mixes permission prompts into stdout.
+    # Compensating controls: single-admin auth, CLAUDE.md rules, cwd locked to predefined repos,
+    # GitHub branch protection on all remote branches.
+    cmd = [claude_bin, "-p", "--model", model, "--permission-mode", "bypassPermissions"]
     if resume:
         cmd.extend(["--resume", session_id])
     else:
