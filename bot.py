@@ -1098,8 +1098,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i in range(0, len(result), 4000):
                 await update.message.reply_text(result[i:i + 4000])
 
-        # Re-show buttons
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        # Re-show buttons (uses top-level import)
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("🚀 開 PR", callback_data=f"task_pr:{branch}"),
             InlineKeyboardButton("❓ 追問", callback_data=f"task_ask:{branch}"),
