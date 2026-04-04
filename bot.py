@@ -455,6 +455,62 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 
+async def _get_claude_status() -> dict | None:
+    """Detect running claude -p subprocess. Returns info dict or None.
+
+    TODO: non-blocking claude calls — let bot accept new messages while
+    claude is running, notify when the old task completes.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ps", "-eo", "pid,etime,stat,args",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    for line in stdout.decode().strip().split("\n"):
+        if "claude" in line and "-p" in line and "--model" in line:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            pid = int(parts[0])
+            elapsed = parts[1]
+            state = parts[2]
+            # Extract model name from args
+            args_str = " ".join(parts[3:])
+            model = "unknown"
+            if "--model" in args_str:
+                idx = args_str.index("--model") + len("--model") + 1
+                model = args_str[idx:].split()[0] if idx < len(args_str) else "unknown"
+            return {"pid": pid, "model": model, "elapsed": elapsed, "state": state}
+    return None
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _check_auth(update):
+        return
+
+    status = await _get_claude_status()
+    if not status:
+        await update.message.reply_text("💤 目前沒有進行中的 Claude 任務")
+        return
+
+    state_label = "🟢 活躍" if status["state"] in ("S", "Sl", "R") else "🔴 停止"
+    msg = (
+        f"📊 Claude 狀態\n\n"
+        f"Model: {status['model']}\n"
+        f"已執行: {status['elapsed']}\n"
+        f"狀態: {state_label} ({status['state']})\n"
+        f"PID: {status['pid']}"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⏳ 繼續等", callback_data="status_wait"),
+            InlineKeyboardButton("🛑 終止", callback_data=f"status_kill:{status['pid']}"),
+        ],
+    ])
+    await update.message.reply_text(msg, reply_markup=keyboard)
+
+
 def _plan_buttons_for_status(status: PlanStatus, has_draft: bool = False) -> InlineKeyboardMarkup:
     """Generate buttons based on current plan status."""
     if status == PlanStatus.EMPTY:
@@ -656,6 +712,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action = query.data
     chat_id = query.message.chat_id
+
+    # /status button handlers
+    if action == "status_wait":
+        await context.bot.send_message(chat_id, "⏳ 繼續等待中")
+        return
+    if action.startswith("status_kill:"):
+        pid = int(action.split(":")[1])
+        try:
+            os.kill(pid, 15)  # SIGTERM
+            await context.bot.send_message(chat_id, f"🛑 已終止 Claude 進程 (PID {pid})")
+        except ProcessLookupError:
+            await context.bot.send_message(chat_id, "進程已結束")
+        return
 
     # Sync repo before morning/evening tasks
     if action in ("morning", "evening"):
@@ -1299,6 +1368,7 @@ async def post_init(app: Application):
         BotCommand("repo", "切工作目錄：journal / kage / home"),
         BotCommand("release", "kage 發版：preview diff → 開 PR"),
         BotCommand("restart", "拉最新 code + 重啟 Bot"),
+        BotCommand("status", "查看 Claude 進程狀態"),
     ]
     await app.bot.set_my_commands(commands)
 
@@ -1321,6 +1391,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("restart", cmd_restart))
+    app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("repo", cmd_repo))
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
