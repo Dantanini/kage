@@ -23,6 +23,7 @@ from telegram.ext import (
 
 from memory import MemoryStore
 from plan_v2 import PlanStore, PlanStatus
+from prompt_specs import PLAN_SPECS, build_prompt
 from router import route
 from session import SessionManager
 from tg_notify import build_memory_save_message, send_telegram_message
@@ -700,23 +701,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _pending_plan_record[chat_id] = True
         return
     elif action == "plan_analyze":
-        content = plan_store.read()
-        if not content:
+        draft = plan_store.read_draft()
+        if not draft:
             await query.edit_message_text("📭 沒有草稿可分析。先撰寫內容。")
             return
         await query.edit_message_text("🧠 Opus 正在分析計畫...")
+        spec = PLAN_SPECS["plan_analyze"]
+        planned = plan_store.read_planned()
+        planned_context = f"【已規劃的項目（不要動，不要重複）】\n{planned}\n\n" if planned else ""
+        prompt = build_prompt(spec, {"draft": draft, "planned_context": planned_context})
         import uuid as _uuid
-        prompt = (
-            f"以下是使用者的計畫草稿，請分析並產出具體的 implementation checklist。\n"
-            f"用 markdown checklist 格式（- [ ] step — branch: feature/xxx, repo: reponame）。\n"
-            f"標註 Phase（可平行的放同一個 Phase），標註依賴關係。\n"
-            f"考慮：架構影響、實作順序、風險。\n\n"
-            f"{content}"
-        )
-        result = await _run_claude(prompt, "opus", str(_uuid.uuid4()), resume=False)
-        if not result.startswith("⚠️"):
+        result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
+        if not result.startswith("⚠️") and spec.validate_output(result):
             plan_store.set_planned(result)
-            # Keep session in opus for follow-up
             user_id = query.from_user.id
             sess = sessions.get_or_create(user_id, "plan", "opus")
             sess.model = "opus"
@@ -728,8 +725,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
             ])
             await context.bot.send_message(chat_id, f"📋 規劃結果：\n\n{preview}", reply_markup=keyboard)
-        else:
+        elif result.startswith("⚠️"):
             await context.bot.send_message(chat_id, f"⚠️ 分析失敗：{result[:500]}")
+        else:
+            await context.bot.send_message(chat_id, "⚠️ Opus 回覆格式不正確（沒有 checklist），請重試或調整草稿。")
         return
     elif action == "plan_adjust":
         await query.edit_message_reply_markup(reply_markup=None)
@@ -982,11 +981,9 @@ async def _run_plan_items(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> N
         await context.bot.send_message(chat_id, f"▶️ [{i}/{len(pending)}] 正在執行：{task_desc[:100]}")
 
         import uuid as _uuid
-        prompt = (
-            f"請執行以下任務：\n\n{task_desc}\n\n"
-            f"完成後簡述做了什麼。"
-        )
-        result = await _run_claude(prompt, "sonnet", str(_uuid.uuid4()), resume=False)
+        spec = PLAN_SPECS["plan_execute"]
+        prompt = build_prompt(spec, {"task": task_desc})
+        result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
 
         if not result.startswith("⚠️"):
             plan_store.complete_item(task_desc[:30])
@@ -1040,18 +1037,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Intercept pending plan adjust — send to Opus for re-planning
     if _pending_plan_adjust.pop(chat_id, False):
-        current_plan = plan_store.read()
-        import uuid as _uuid
-        prompt = (
-            f"以下是目前的實作計畫和使用者的調整要求：\n\n"
-            f"【目前計畫】\n{current_plan}\n\n"
-            f"【調整要求】\n{text}\n\n"
-            f"請根據調整要求修改計畫，輸出完整的新版 checklist。\n"
-            f"格式：markdown checklist（- [ ] step — branch: feature/xxx, repo: reponame）。"
-        )
+        spec = PLAN_SPECS["plan_adjust"]
+        current_plan = plan_store.read_planned()
+        prompt = build_prompt(spec, {"current_plan": current_plan, "user_feedback": text})
         await update.message.reply_text("🧠 Opus 正在調整計畫...")
-        result = await _run_claude(prompt, "opus", str(_uuid.uuid4()), resume=False)
-        if not result.startswith("⚠️"):
+        import uuid as _uuid
+        result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
+        if not result.startswith("⚠️") and spec.validate_output(result):
             plan_store.set_planned(result)
             preview = result[:3000]
             keyboard = InlineKeyboardMarkup([
@@ -1061,8 +1053,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ],
             ])
             await update.message.reply_text(f"📋 調整後的計畫：\n\n{preview}", reply_markup=keyboard)
-        else:
+        elif result.startswith("⚠️"):
             await update.message.reply_text(f"⚠️ 調整失敗：{result[:500]}")
+        else:
+            await update.message.reply_text("⚠️ Opus 回覆格式不正確（沒有 checklist），請重試。")
         return
 
     # Intercept reply to task_ask prompt — extract branch from replied message
