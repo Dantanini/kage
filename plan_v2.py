@@ -161,8 +161,10 @@ class PlanStore:
     def pause(self) -> None:
         self._set_status(PlanStatus.PLANNED)
 
-    def complete_item(self, item_substring: str) -> None:
-        """Move a matching item from planned.md to completed.md."""
+    def complete_item(self, item_substring: str, branch: str | None = None) -> None:
+        """Move a matching item from planned.md to completed.md.
+        Optionally record the branch name for later PR opening.
+        """
         planned = _read_file(self._planned_file)
         lines = planned.split("\n")
         completed_line = None
@@ -171,6 +173,8 @@ class PlanStore:
         for line in lines:
             if completed_line is None and "- [ ]" in line and item_substring in line:
                 completed_line = line.replace("- [ ]", "- [x]", 1)
+                if branch and f"branch: {branch}" not in completed_line:
+                    completed_line += f" — branch: {branch}"
             else:
                 new_lines.append(line)
 
@@ -192,6 +196,65 @@ class PlanStore:
     def draft_items(self) -> list[str]:
         draft = _read_file(self._draft_file)
         return [l.strip() for l in draft.split("\n") if l.strip().startswith("- ")]
+
+    def completed_branches(self) -> list[str]:
+        """Extract branch names from completed items."""
+        completed = _read_file(self._completed_file)
+        branches = []
+        for line in completed.split("\n"):
+            parsed = self._parse_item_metadata(line)
+            if parsed.get("branch"):
+                branches.append(parsed["branch"])
+        return branches
+
+    def parse_planned_items(self) -> list[dict]:
+        """Parse planned.md items into structured dicts.
+        Returns: [{"task": str, "branch": str|None, "repo": str|None}, ...]
+        """
+        planned = _read_file(self._planned_file)
+        items = []
+        for line in planned.split("\n"):
+            line = line.strip()
+            if not line.startswith("- [ ]"):
+                continue
+            parsed = self._parse_item_metadata(line)
+            items.append(parsed)
+        return items
+
+    def current_item_index(self) -> int | None:
+        """Get index of the first pending item, or None if all done."""
+        pending = self.pending_items()
+        return 0 if pending else None
+
+    @staticmethod
+    def _parse_item_metadata(line: str) -> dict:
+        """Parse a checklist line into {task, branch, repo}.
+        Format: - [ ] task description — branch: xxx, repo: yyy
+        """
+        # Strip checkbox prefix
+        text = line.strip()
+        for prefix in ("- [ ] ", "- [x] "):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+
+        # Split on " — " to separate task from metadata
+        parts = text.split(" — ", 1)
+        task = parts[0].strip().rstrip("*").strip()
+        branch = None
+        repo = None
+
+        if len(parts) > 1:
+            metadata = parts[1]
+            import re
+            branch_match = re.search(r"branch:\s*`?([^\s,`]+)`?", metadata)
+            repo_match = re.search(r"repo:\s*`?([^\s,`]+)`?", metadata)
+            if branch_match:
+                branch = branch_match.group(1)
+            if repo_match:
+                repo = repo_match.group(1)
+
+        return {"task": task, "branch": branch, "repo": repo}
 
     # ── Delete ──
 
