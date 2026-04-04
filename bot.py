@@ -508,6 +508,47 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     body = args[1] if len(args) > 1 else ""
 
     if body:
+        # /plan delete [N]
+        if body.lower().startswith("delete"):
+            parts = body.split(None, 1)
+            if len(parts) < 2:
+                # Show numbered list so user knows what index to use
+                items = plan_store.all_items_numbered()
+                if not items:
+                    await update.message.reply_text("📭 目前沒有項目可刪除。")
+                else:
+                    lines = [f"{idx}. {line}" for (_, line, idx) in items]
+                    await update.message.reply_text(
+                        "請輸入要刪除的項目編號，例如 `/plan delete 2`\n\n"
+                        + "\n".join(lines),
+                        parse_mode="Markdown",
+                    )
+                return
+
+            raw_n = parts[1].strip()
+            if not raw_n.isdigit():
+                await update.message.reply_text(
+                    f"❌ 請輸入數字，例如 `/plan delete 2`（收到：`{raw_n}`）",
+                    parse_mode="Markdown",
+                )
+                return
+
+            n = int(raw_n)
+            deleted = plan_store.delete_item(n)
+            if deleted is None:
+                await update.message.reply_text(f"❌ 找不到項目 #{n}，請先用 `/plan delete` 查看編號。", parse_mode="Markdown")
+                return
+
+            status = plan_store.status
+            content = plan_store.read()
+            preview = content[:2000] if content else ""
+            keyboard = _plan_buttons_for_status(status, has_draft=bool(plan_store.draft_items()))
+            msg = f"🗑️ 已刪除 #{n}：`{deleted}`"
+            if preview:
+                msg += f"\n\n{preview}"
+            await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+            return
+
         # Quick append: /plan <text>
         plan_store.append(body)
         status = plan_store.status
