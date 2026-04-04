@@ -956,6 +956,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=keyboard,
         )
         return
+    elif action == "plan_view":
+        content = plan_store.read()
+        preview = content[:3000] if content else "（空）"
+        keyboard = _plan_buttons_for_status(plan_store.status, has_draft=bool(plan_store.draft_items()))
+        await context.bot.send_message(chat_id, f"📋 計畫總覽\n\n{preview}", reply_markup=keyboard)
+        return
     elif action.startswith("task_pr:"):
         branch = action[len("task_pr:"):]
         await query.edit_message_text(f"🚀 正在為 {branch} 開 PR...")
