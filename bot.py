@@ -673,9 +673,13 @@ async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pull_err:
         await update.message.reply_text(f"⚠️ {pull_err}\n繼續執行...")
 
-    steps = build_evening_steps()
+    completed_items = plan_store.read_completed()
+    steps = build_evening_steps(completed_items=completed_items)
     results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
     result = format_workflow_results(results)
+
+    if completed_items and results and results[-1].success:
+        plan_store.archive_completed()
 
     try:
         await status_msg.delete()
@@ -734,9 +738,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = format_workflow_results(results)
     elif action == "evening":
         status_msg = await context.bot.send_message(chat_id, "🌙 正在整理今日日結（分步執行中）...")
-        steps = build_evening_steps()
+        completed_items = plan_store.read_completed()
+        steps = build_evening_steps(completed_items=completed_items)
         results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
         result = format_workflow_results(results)
+        if completed_items and results and results[-1].success:
+            plan_store.archive_completed()
     # ── Plan v2 actions ──
     elif action == "plan_write":
         await query.edit_message_text("📝 請輸入計畫內容（下一則訊息會被記錄）：")

@@ -55,15 +55,29 @@ def build_morning_steps(today: str | None = None) -> list[WorkflowStep]:
     ]
 
 
-def build_evening_steps(today: str | None = None) -> list[WorkflowStep]:
-    """Build the evening workflow steps from EVENING_SPECS."""
+def build_evening_steps(today: str | None = None, completed_items: str = "") -> list[WorkflowStep]:
+    """Build the evening workflow steps from EVENING_SPECS.
+
+    Args:
+        today: Date string in YYYY-MM-DD format. Defaults to today.
+        completed_items: Content from plan_store.read_completed(). If non-empty,
+            included in the daily update step so completed tasks are recorded.
+    """
     today = today or date.today().isoformat()
     inputs_by_step: dict[str, dict[str, str]] = {
         "gather_today": {"today": today},
         "update_memory_and_readme": {},
         "update_daily_and_commit": {"today": today},
     }
-    return [
+
+    plan_section = ""
+    if completed_items:
+        plan_section = (
+            f"\n\n【今日已完成的計畫項目】\n{completed_items}\n"
+            f"請把這些完成項目也寫進 daily/{today}.md。"
+        )
+
+    steps = [
         WorkflowStep(
             name=name,
             prompt=build_prompt(spec, inputs_by_step[name]),
@@ -72,6 +86,17 @@ def build_evening_steps(today: str | None = None) -> list[WorkflowStep]:
         )
         for name, spec in EVENING_SPECS.items()
     ]
+
+    # Inject completed plan items into the commit step
+    if plan_section:
+        steps[-1] = WorkflowStep(
+            name=steps[-1].name,
+            prompt=steps[-1].prompt + plan_section,
+            model=steps[-1].model,
+            include_previous=steps[-1].include_previous,
+        )
+
+    return steps
 
 
 async def run_workflow(
