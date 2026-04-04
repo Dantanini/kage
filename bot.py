@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 
 from memory import MemoryStore
-from plan import PlanStore
+from plan_v2 import PlanStore, PlanStatus
 from router import route
 from session import SessionManager
 from tg_notify import build_memory_save_message, send_telegram_message
@@ -76,12 +76,12 @@ sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
 
 # Persistent memory
 memory_store = MemoryStore(base_dir=REPOS["journal"])
-plan_store = PlanStore(base_dir=REPOS["journal"])
+plan_store = PlanStore(local_dir=str(REPO_DIR / ".local"))
 
 # Track pending plan record state (chat_id → True when waiting for next message)
 _pending_plan_record: dict[int, bool] = {}
-# Track pending conflict resolution (chat_id → new plan text)
-_pending_plan_conflict: dict[int, str] = {}
+# Track pending plan adjust state (chat_id → True when waiting for adjust feedback)
+_pending_plan_adjust: dict[int, bool] = {}
 # Marker prefix in task_ask prompt messages, used to extract branch from reply_to_message
 TASK_ASK_MARKER = "❓ 針對"
 
@@ -456,15 +456,45 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os._exit(0)
 
 
-def _plan_recorded_keyboard() -> InlineKeyboardMarkup:
-    """Return keyboard with '▶️ 開始計畫' button shown after plan is recorded."""
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("▶️ 開始計畫", callback_data="plan_start"),
-    ]])
+def _plan_buttons_for_status(status: PlanStatus) -> InlineKeyboardMarkup:
+    """Generate buttons based on current plan status."""
+    if status == PlanStatus.EMPTY:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("📝 撰寫", callback_data="plan_write")],
+        ])
+    elif status == PlanStatus.DRAFT:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📝 撰寫", callback_data="plan_write"),
+                InlineKeyboardButton("🧠 規劃", callback_data="plan_analyze"),
+            ],
+        ])
+    elif status == PlanStatus.PLANNED:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔧 調整", callback_data="plan_adjust"),
+                InlineKeyboardButton("🔨 執行", callback_data="plan_execute"),
+            ],
+        ])
+    elif status == PlanStatus.EXECUTING:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸️ 暫停", callback_data="plan_pause")],
+        ])
+    return InlineKeyboardMarkup([])
+
+
+def _plan_status_text(status: PlanStatus) -> str:
+    """Status emoji + text."""
+    return {
+        PlanStatus.EMPTY: "📭 目前無計畫",
+        PlanStatus.DRAFT: "📝 草稿中",
+        PlanStatus.PLANNED: "📋 已規劃，待執行",
+        PlanStatus.EXECUTING: "🔨 執行中",
+    }.get(status, "")
 
 
 async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Plan menu. /plan = show buttons, /plan <text> = record intent."""
+    """Plan menu. /plan = show status + buttons, /plan <text> = quick append."""
     if not await _check_auth(update):
         return
 
@@ -472,29 +502,36 @@ async def cmd_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = text.split(None, 1)
     body = args[1] if len(args) > 1 else ""
 
-    if not body:
-        # Show plan menu with inline buttons
-        has_plan = plan_store.has_plan()
-        status = "📋 有待執行計畫" if has_plan else "📭 目前無計畫"
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("📝 記錄", callback_data="plan_record"),
-                InlineKeyboardButton("▶️ 開始計畫", callback_data="plan_start"),
-            ],
-            [
-                InlineKeyboardButton("🔨 實作", callback_data="plan_impl"),
-                InlineKeyboardButton("📋 查看計畫", callback_data="plan_view"),
-            ],
-        ])
+    if body:
+        # Quick append: /plan <text>
+        plan_store.append(body)
+        status = plan_store.status
+        content = plan_store.read()
+        preview = content[:2000] if len(content) > 2000 else content
+        keyboard = _plan_buttons_for_status(status)
         await update.message.reply_text(
-            f"{status}\n\n選擇操作：",
+            f"✅ 已記錄\n\n{preview}",
             reply_markup=keyboard,
         )
         return
 
-    # Has text → record plan intent
-    plan_store.write(body)
-    await update.message.reply_text("✅ 計畫已記錄", reply_markup=_plan_recorded_keyboard())
+    # No text → show current plan + buttons
+    status = plan_store.status
+    status_text = _plan_status_text(status)
+    content = plan_store.read()
+    preview = content[:2000] if content else ""
+    keyboard = _plan_buttons_for_status(status)
+
+    if preview:
+        await update.message.reply_text(
+            f"{status_text}\n\n{preview}",
+            reply_markup=keyboard,
+        )
+    else:
+        await update.message.reply_text(
+            f"{status_text}\n\n選擇操作：",
+            reply_markup=keyboard,
+        )
 
 
 async def handle_release(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -655,90 +692,66 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         steps = build_evening_steps()
         results = await run_workflow(steps, _run_claude, cwd=_get_journal_path())
         result = format_workflow_results(results)
-    elif action == "plan_view":
-        content = plan_store.read()
-        if content:
-            await query.edit_message_text(f"📋 目前計畫：\n\n{content}")
-        else:
-            await query.edit_message_text("📭 沒有待執行的計畫。")
-        return
-    elif action == "plan_record":
-        await query.edit_message_text("📝 請輸入計畫內容（下一則訊息會被記錄為計畫）：")
+    # ── Plan v2 actions ──
+    elif action == "plan_write":
+        await query.edit_message_text("📝 請輸入計畫內容（下一則訊息會被記錄）：")
         _pending_plan_record[chat_id] = True
         return
-    elif action == "plan_start":
+    elif action == "plan_analyze":
         content = plan_store.read()
         if not content:
-            await query.edit_message_text("📭 沒有計畫可分析。先用「記錄」新增計畫。")
+            await query.edit_message_text("📭 沒有草稿可分析。先撰寫內容。")
             return
         await query.edit_message_text("🧠 Opus 正在分析計畫...")
         import uuid as _uuid
         prompt = (
-            f"以下是使用者的計畫意圖，請分析並產出具體的 implementation checklist。\n"
-            f"用 markdown checklist 格式（- [ ] step）。\n"
+            f"以下是使用者的計畫草稿，請分析並產出具體的 implementation checklist。\n"
+            f"用 markdown checklist 格式（- [ ] step — branch: feature/xxx, repo: reponame）。\n"
+            f"標註 Phase（可平行的放同一個 Phase），標註依賴關係。\n"
             f"考慮：架構影響、實作順序、風險。\n\n"
             f"{content}"
         )
         result = await _run_claude(prompt, "opus", str(_uuid.uuid4()), resume=False)
         if not result.startswith("⚠️"):
-            impl_plan_path = plan_store._dir / "implementation-plan.md"
-            today = date.today().isoformat()
-            impl_plan_path.write_text(
-                f"---\ntitle: Implementation Plan\ntags: [system, active]\nupdated: {today}\n---\n\n{result}\n",
-                encoding="utf-8",
-            )
-            # Keep session in opus so follow-up questions stay in opus
+            plan_store.set_planned(result)
+            # Keep session in opus for follow-up
             user_id = query.from_user.id
             sess = sessions.get_or_create(user_id, "plan", "opus")
             sess.model = "opus"
             preview = result[:3000]
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ 確認並開始實作", callback_data="plan_confirm_impl"),
-                InlineKeyboardButton("📌 確認，稍後再做", callback_data="plan_confirm_later"),
-            ]])
-            await context.bot.send_message(chat_id, f"📋 實作計畫：\n\n{preview}", reply_markup=keyboard)
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔧 調整", callback_data="plan_adjust"),
+                    InlineKeyboardButton("🔨 執行", callback_data="plan_execute"),
+                ],
+            ])
+            await context.bot.send_message(chat_id, f"📋 規劃結果：\n\n{preview}", reply_markup=keyboard)
         else:
             await context.bot.send_message(chat_id, f"⚠️ 分析失敗：{result[:500]}")
         return
-    elif action == "plan_confirm_impl":
-        await query.edit_message_text("🔨 開始實作...")
-        # Switch back to sonnet for implementation
-        user_id = query.from_user.id
-        sess = sessions.get_or_create(user_id, "impl", "sonnet")
-        sess.model = "sonnet"
-        await _run_plan_impl(chat_id, context)
-        return
-    elif action == "plan_confirm_later":
+    elif action == "plan_adjust":
         await query.edit_message_reply_markup(reply_markup=None)
-        await context.bot.send_message(chat_id, "📌 計畫已確認，稍後用 /plan → 實作 開始執行。")
+        await context.bot.send_message(chat_id, "🔧 請回覆你想調整的內容（下一則訊息）：")
+        _pending_plan_adjust[chat_id] = True
         return
-    elif action == "plan_merge_overwrite":
-        new_text = _pending_plan_conflict.pop(chat_id, "")
-        if new_text:
-            plan_store.write(new_text)
-            await query.edit_message_text("✅ 計畫已覆蓋", reply_markup=_plan_recorded_keyboard())
-        else:
-            await query.edit_message_text("⚠️ 找不到待覆蓋內容")
-        return
-    elif action == "plan_merge_append":
-        new_text = _pending_plan_conflict.pop(chat_id, "")
-        if new_text:
-            plan_store.append(new_text)
-            await query.edit_message_text("✅ 已追加到計畫", reply_markup=_plan_recorded_keyboard())
-        else:
-            await query.edit_message_text("⚠️ 找不到待追加內容")
-        return
-    elif action == "plan_merge_cancel":
-        _pending_plan_conflict.pop(chat_id, None)
-        await query.edit_message_text("❌ 已取消")
-        return
-    elif action == "plan_impl":
-        impl_path = plan_store._dir / "implementation-plan.md"
-        if not impl_path.exists():
-            await query.edit_message_text("📭 沒有實作計畫。先用「開始計畫」讓 Opus 分析。")
+    elif action == "plan_execute":
+        if plan_store.status != PlanStatus.PLANNED:
+            await query.edit_message_text("📭 沒有計畫可執行。")
             return
-        await query.edit_message_text("🔨 開始實作...")
-        await _run_plan_impl(chat_id, context)
+        plan_store.set_executing()
+        await query.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_message(chat_id, "🔨 開始逐項執行...")
+        await _run_plan_items(chat_id, context)
+        return
+    elif action == "plan_pause":
+        plan_store.pause()
+        content = plan_store.read()
+        preview = content[:2000] if content else ""
+        keyboard = _plan_buttons_for_status(plan_store.status)
+        await query.edit_message_text(
+            f"⏸️ 已暫停\n\n{preview}",
+            reply_markup=keyboard,
+        )
         return
     elif action.startswith("task_pr:"):
         branch = action[len("task_pr:"):]
@@ -949,35 +962,47 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(result[i:i + 4000])
 
 
-async def _run_plan_impl(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute implementation plan with Sonnet, marking items as done."""
-    impl_path = plan_store._dir / "implementation-plan.md"
-    if not impl_path.exists():
-        await context.bot.send_message(chat_id, "📭 沒有實作計畫。")
+async def _run_plan_items(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Execute plan items one by one with per-item notifications."""
+    pending = plan_store.pending_items()
+    if not pending:
+        await context.bot.send_message(chat_id, "📭 沒有待執行項目。")
         return
 
-    content = impl_path.read_text(encoding="utf-8")
-    import uuid as _uuid
-    prompt = (
-        "以下是實作計畫，請逐項執行。每完成一項，更新 "
-        f"{impl_path} 中對應的 checkbox 為 [x]。\n"
-        "如果全部完成，回報結果。如果部分完成，說明進度。\n\n"
-        f"{content}"
-    )
-    result = await _run_claude(prompt, "sonnet", str(_uuid.uuid4()), resume=False)
+    for i, item in enumerate(pending, 1):
+        if plan_store.status != PlanStatus.EXECUTING:
+            # Paused
+            await context.bot.send_message(chat_id, f"⏸️ 已暫停，完成了 {i-1}/{len(pending)} 項")
+            return
 
-    if len(result) <= 4000:
-        await context.bot.send_message(chat_id, result)
-    else:
-        for i in range(0, len(result), 4000):
-            await context.bot.send_message(chat_id, result[i:i + 4000])
+        # Extract task description (strip "- [ ] " prefix)
+        task_desc = item.replace("- [ ]", "").strip()
+        await context.bot.send_message(chat_id, f"▶️ [{i}/{len(pending)}] 正在執行：{task_desc[:100]}")
 
-    # Check if all items completed → consume
-    updated = impl_path.read_text(encoding="utf-8") if impl_path.exists() else ""
-    if updated and "- [ ]" not in updated and "- [x]" in updated:
-        impl_path.unlink(missing_ok=True)
-        plan_store.consume()
-        await context.bot.send_message(chat_id, "✅ 所有項目完成，計畫已清除。")
+        import uuid as _uuid
+        prompt = (
+            f"請執行以下任務：\n\n{task_desc}\n\n"
+            f"完成後簡述做了什麼。"
+        )
+        result = await _run_claude(prompt, "sonnet", str(_uuid.uuid4()), resume=False)
+
+        if not result.startswith("⚠️"):
+            plan_store.complete_item(task_desc[:30])
+            # Send result with PR + ask buttons
+            preview = result[:3000]
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚀 開 PR", callback_data=f"task_pr:{task_desc[:30]}"),
+                InlineKeyboardButton("❓ 追問", callback_data=f"task_ask:{task_desc[:30]}"),
+                InlineKeyboardButton("⏸️ 暫停", callback_data="plan_pause"),
+            ]])
+            await context.bot.send_message(chat_id, f"✅ [{i}/{len(pending)}] 完成\n\n{preview}", reply_markup=keyboard)
+        else:
+            await context.bot.send_message(chat_id, f"⚠️ [{i}/{len(pending)}] 失敗：{result[:500]}")
+
+    # Check if all done
+    if plan_store.all_completed():
+        archived = plan_store.archive_completed()
+        await context.bot.send_message(chat_id, "🎉 所有項目完成，計畫已歸檔。")
 
 
 async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -998,50 +1023,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
-    # Intercept pending plan record
+    # Intercept pending plan record — pure append, no LLM
     if _pending_plan_record.pop(chat_id, False):
-        existing = plan_store.read()
-        if not existing:
-            plan_store.write(text)
-            await update.message.reply_text("✅ 計畫已記錄", reply_markup=_plan_recorded_keyboard())
+        plan_store.append(text)
+        status = plan_store.status
+        content = plan_store.read()
+        preview = content[:2000] if len(content) > 2000 else content
+        keyboard = _plan_buttons_for_status(status)
+        await update.message.reply_text(
+            f"✅ 已記錄\n\n{preview}",
+            reply_markup=keyboard,
+        )
+        return
+
+    # Intercept pending plan adjust — send to Opus for re-planning
+    if _pending_plan_adjust.pop(chat_id, False):
+        current_plan = plan_store.read()
+        import uuid as _uuid
+        prompt = (
+            f"以下是目前的實作計畫和使用者的調整要求：\n\n"
+            f"【目前計畫】\n{current_plan}\n\n"
+            f"【調整要求】\n{text}\n\n"
+            f"請根據調整要求修改計畫，輸出完整的新版 checklist。\n"
+            f"格式：markdown checklist（- [ ] step — branch: feature/xxx, repo: reponame）。"
+        )
+        await update.message.reply_text("🧠 Opus 正在調整計畫...")
+        result = await _run_claude(prompt, "opus", str(_uuid.uuid4()), resume=False)
+        if not result.startswith("⚠️"):
+            plan_store.set_planned(result)
+            preview = result[:3000]
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔧 調整", callback_data="plan_adjust"),
+                    InlineKeyboardButton("🔨 執行", callback_data="plan_execute"),
+                ],
+            ])
+            await update.message.reply_text(f"📋 調整後的計畫：\n\n{preview}", reply_markup=keyboard)
         else:
-            import uuid as _uuid
-            merge_prompt = (
-                "你是計畫合併助手。現有計畫和新輸入如下：\n\n"
-                f"【現有計畫】\n{existing}\n\n"
-                f"【新輸入】\n{text}\n\n"
-                "判斷：\n"
-                "1. 如果新輸入是現有計畫的補充 → 回覆 APPEND 開頭，接著合併後的完整計畫\n"
-                "2. 如果新輸入跟現有計畫方向不同（衝突）→ 回覆 CONFLICT 開頭，接著說明衝突原因\n"
-                "3. 如果新輸入明確要取代現有計畫 → 回覆 OVERWRITE 開頭，接著新計畫內容\n"
-                "只回覆上述格式，不要多餘解釋。"
-            )
-            result = await _run_claude(merge_prompt, "sonnet", str(_uuid.uuid4()), resume=False)
-
-            if result.startswith("APPEND"):
-                merged = result[len("APPEND"):].strip()
-                plan_store.write(merged)
-                await update.message.reply_text("✅ 已追加到現有計畫", reply_markup=_plan_recorded_keyboard())
-            elif result.startswith("CONFLICT"):
-                reason = result[len("CONFLICT"):].strip()
-                _pending_plan_conflict[chat_id] = text
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("覆蓋", callback_data="plan_merge_overwrite"),
-                    InlineKeyboardButton("追加", callback_data="plan_merge_append"),
-                    InlineKeyboardButton("取消", callback_data="plan_merge_cancel"),
-                ]])
-                await update.message.reply_text(
-                    f"⚠️ 計畫衝突：{reason}\n\n如何處理？",
-                    reply_markup=keyboard,
-                )
-            elif result.startswith("OVERWRITE"):
-                new_content = result[len("OVERWRITE"):].strip()
-                plan_store.write(new_content)
-                await update.message.reply_text("✅ 計畫已覆蓋", reply_markup=_plan_recorded_keyboard())
-            else:
-                plan_store.append(text)
-                await update.message.reply_text("✅ 已追加到計畫", reply_markup=_plan_recorded_keyboard())
-
+            await update.message.reply_text(f"⚠️ 調整失敗：{result[:500]}")
         return
 
     # Intercept reply to task_ask prompt — extract branch from replied message
@@ -1180,9 +1199,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not result.startswith("⚠️"):
         session.touch()
         session.qa_log.append((prompt, result))
-        # Consume plan only after successful first message
-        if plan_store.has_plan() and not resume:
-            plan_store.consume()
 
         # Auto-flush if log is too large
         if session.qa_log_size() >= QA_LOG_FLUSH_SIZE:
