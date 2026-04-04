@@ -21,6 +21,7 @@ class PromptSpec:
     instruction: str  # Template with {placeholders} for inputs
     input_keys: list[str]  # Required input names
     output_validator: Callable[[str], bool] | None = None
+    include_previous: bool = True  # Whether to include prior step results in prompt
 
     def validate_output(self, output: str) -> bool:
         if self.output_validator is None:
@@ -89,5 +90,44 @@ PLAN_SPECS: dict[str, PromptSpec] = {
         ),
         input_keys=["task"],
         # Execute accepts any output — the task itself is the validation
+    ),
+}
+
+
+# ── /morning specs ──
+
+MORNING_SPECS: dict[str, PromptSpec] = {
+    "gather_focus": PromptSpec(
+        action="MORNING_FOCUS",
+        model="sonnet",
+        instruction=(
+            "[系統] 今天是 {today}。\n"
+            "讀 profile/current-focus.md，回傳目前三條主線的重點摘要（不超過 200 字）。"
+        ),
+        input_keys=["today"],
+        include_previous=False,
+    ),
+    "gather_recent": PromptSpec(
+        action="MORNING_RECENT",
+        model="sonnet",
+        instruction=(
+            "讀最近 3 天的 daily/*.md，回傳近期進度摘要（不超過 200 字）。"
+            "有哪些完成了、哪些卡住了？"
+        ),
+        input_keys=[],
+        include_previous=False,
+    ),
+    "synthesize": PromptSpec(
+        action="MORNING_SYNTHESIZE",
+        model="opus",
+        instruction=(
+            "根據以上主線和近期進度，給 Dante 今日建議：\n"
+            "1. 今天最重要的 1-2 件事（根據主線優先順序）\n"
+            "2. 學習可以從哪裡繼續\n"
+            "3. 有沒有什麼卡住的需要處理\n"
+            "請簡潔，不超過 300 字。"
+        ),
+        input_keys=[],
+        include_previous=True,
     ),
 }

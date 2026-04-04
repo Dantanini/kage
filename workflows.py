@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 
+from prompt_specs import MORNING_SPECS, build_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,33 +37,21 @@ class WorkflowResult:
 
 
 def build_morning_steps(today: str | None = None) -> list[WorkflowStep]:
-    """Build the morning workflow steps."""
+    """Build the morning workflow steps from MORNING_SPECS."""
     today = today or date.today().isoformat()
+    inputs_by_step: dict[str, dict[str, str]] = {
+        "gather_focus": {"today": today},
+        "gather_recent": {},
+        "synthesize": {},
+    }
     return [
         WorkflowStep(
-            name="gather_focus",
-            prompt=f"[系統] 今天是 {today}。\n讀 profile/current-focus.md，回傳目前三條主線的重點摘要（不超過 200 字）。",
-            model="sonnet",
-            include_previous=False,
-        ),
-        WorkflowStep(
-            name="gather_recent",
-            prompt="讀最近 3 天的 daily/*.md，回傳近期進度摘要（不超過 200 字）。有哪些完成了、哪些卡住了？",
-            model="sonnet",
-            include_previous=False,
-        ),
-        WorkflowStep(
-            name="synthesize",
-            prompt=(
-                "根據以上主線和近期進度，給 Dante 今日建議：\n"
-                "1. 今天最重要的 1-2 件事（根據主線優先順序）\n"
-                "2. 學習可以從哪裡繼續\n"
-                "3. 有沒有什麼卡住的需要處理\n"
-                "請簡潔，不超過 300 字。"
-            ),
-            model="opus",
-            include_previous=True,
-        ),
+            name=name,
+            prompt=build_prompt(spec, inputs_by_step[name]),
+            model=spec.model,
+            include_previous=spec.include_previous,
+        )
+        for name, spec in MORNING_SPECS.items()
     ]
 
 
