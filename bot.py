@@ -1464,6 +1464,13 @@ async def post_init(app: Application):
         finally:
             notify_file.unlink(missing_ok=True)
 
+    # Downgrade EXECUTING → PLANNED if no claude subprocess is running
+    if plan_store.status == PlanStatus.EXECUTING:
+        claude_status = await _get_claude_status()
+        if claude_status is None:
+            plan_store.pause()
+            logger.info("Plan status downgraded: EXECUTING → PLANNED (no active subprocess)")
+
     # Recover plan state — notify admin if there's an interrupted plan
     recovery = _build_plan_recovery()
     if recovery:
