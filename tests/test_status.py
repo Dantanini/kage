@@ -30,7 +30,7 @@ class TestGetClaudeStatus:
     @pytest.mark.asyncio
     async def test_running_process_returns_info(self):
         """Detected claude process → return dict with pid, model, elapsed."""
-        ps_output = b"12345 00:03:42 Sl claude -p --model opus --permission-mode acceptEdits --session-id abc"
+        ps_output = b"12345 00:03:42 Sl claude -p --model opus --session-id abc"
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(ps_output, b""))
@@ -46,7 +46,7 @@ class TestGetClaudeStatus:
     @pytest.mark.asyncio
     async def test_extracts_sonnet_model(self):
         """Should correctly extract sonnet model name."""
-        ps_output = b"99999 00:01:05 Sl claude -p --model sonnet --permission-mode acceptEdits --resume xyz"
+        ps_output = b"99999 00:01:05 Sl claude -p --model sonnet --resume xyz"
 
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(ps_output, b""))
