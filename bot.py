@@ -1191,15 +1191,18 @@ async def _run_next_plan_item(chat_id: int, context: ContextTypes.DEFAULT_TYPE) 
     task_info = parsed[0] if parsed else {"task": item.replace("- [ ]", "").strip(), "branch": None, "repo": None}
     task_desc = task_info["task"]
     planned_branch = task_info.get("branch") or ""
+    planned_repo = task_info.get("repo")
+    task_cwd = REPOS.get(planned_repo) if planned_repo else None
 
     current = len(pending)
     idx = total - current + 1
-    await context.bot.send_message(chat_id, f"▶️ [{idx}] 正在執行：{task_desc[:100]}")
+    repo_label = f" ({planned_repo})" if planned_repo else ""
+    await context.bot.send_message(chat_id, f"▶️ [{idx}] 正在執行：{task_desc[:100]}{repo_label}")
 
     import uuid as _uuid
     spec = PLAN_SPECS["plan_execute"]
     prompt = build_prompt(spec, {"task": task_desc})
-    result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
+    result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False, cwd=task_cwd)
 
     if not result.startswith("⚠️"):
         # Detect branch: use planned branch or try git branch --show-current
