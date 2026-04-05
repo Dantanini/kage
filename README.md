@@ -9,7 +9,7 @@ kage is a lightweight Telegram bot that bridges your messages to [Claude Code CL
 ## Architecture
 
 ```
-Telegram → kage (thin relay) → claude -p --permission-mode bypassPermissions
+Telegram → kage (thin relay) → claude -p
                                    ↓
                               works in selected repo's directory
                               reads repo's .claude/CLAUDE.md

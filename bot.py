@@ -203,9 +203,7 @@ async def _run_claude_once(prompt: str, model: str, session_id: str, resume: boo
     claude_bin = _find_claude()
     work_dir = cwd or _current_repo.get("path", _get_journal_path())
 
-    # acceptEdits + allowedTools (.claude/settings.json) limits permissions to
-    # the 6 tools the bot actually uses (Bash, Read, Edit, Write, Grep, Glob).
-    cmd = [claude_bin, "-p", "--model", model, "--permission-mode", "acceptEdits"]
+    cmd = [claude_bin, "-p", "--model", model]
     if resume:
         cmd.extend(["--resume", session_id])
     else:
