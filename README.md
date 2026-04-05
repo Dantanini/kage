@@ -24,6 +24,8 @@ Key design decisions:
 - **Session management** — conversations persist within a session, with 30-min timeout
 - **Cross-platform** — runs on Linux, macOS, Windows
 
+> **Note on permissions:** `claude -p` reads tool permissions from the machine's global `~/.claude/settings.json`, not from any project-level settings. kage does not manage Claude permissions — that's the operator's responsibility. Each repo's `.claude/CLAUDE.md` controls instructions (what Claude should do), while `~/.claude/settings.json` controls permissions (what tools Claude can use).
+
 ## Setup
 
 ### Prerequisites
