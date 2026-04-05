@@ -1512,9 +1512,14 @@ def main():
 
     logger.info(f"Bot starting, journal: {journal_path}")
 
-    app = Application.builder().token(token).post_init(post_init).build()
+    app = _build_app(token)
     _register_handlers(app)
     app.run_polling(drop_pending_updates=True)
+
+
+def _build_app(token: str) -> Application:
+    """Build Application with concurrent update processing."""
+    return Application.builder().token(token).post_init(post_init).concurrent_updates(True).build()
 
 
 def _register_handlers(app: Application) -> None:
