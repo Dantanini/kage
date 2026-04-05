@@ -230,7 +230,12 @@ class PlanStore:
     def _parse_item_metadata(line: str) -> dict:
         """Parse a checklist line into {task, branch, repo}.
         Format: - [ ] task description — branch: xxx, repo: yyy
+
+        Handles various separator styles: ' — ', '—', '--', with or
+        without surrounding spaces, and bold/backtick markdown.
         """
+        import re
+
         # Strip checkbox prefix
         text = line.strip()
         for prefix in ("- [ ] ", "- [x] "):
@@ -238,17 +243,16 @@ class PlanStore:
                 text = text[len(prefix):]
                 break
 
-        # Split on " — " to separate task from metadata
-        parts = text.split(" — ", 1)
+        # Split on em-dash (—) or double-hyphen (--), with optional spaces
+        parts = re.split(r"\s*(?:—|--)\s*", text, maxsplit=1)
         task = parts[0].strip().rstrip("*").strip()
         branch = None
         repo = None
 
         if len(parts) > 1:
             metadata = parts[1]
-            import re
-            branch_match = re.search(r"branch:\s*`?([^\s,`]+)`?", metadata)
-            repo_match = re.search(r"repo:\s*`?([^\s,`]+)`?", metadata)
+            branch_match = re.search(r"branch:\s*\**`?([^\s,`*]+)`?\**", metadata)
+            repo_match = re.search(r"repo:\s*\**`?([^\s,`*]+)`?\**", metadata)
             if branch_match:
                 branch = branch_match.group(1)
             if repo_match:
