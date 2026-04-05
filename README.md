@@ -9,7 +9,7 @@ kage is a lightweight Telegram bot that bridges your messages to [Claude Code CL
 ## Architecture
 
 ```
-Telegram → kage (thin relay) → claude -p --permission-mode bypassPermissions
+Telegram → kage (thin relay) → claude -p
                                    ↓
                               works in selected repo's directory
                               reads repo's .claude/CLAUDE.md
@@ -23,6 +23,8 @@ Key design decisions:
 - **Multi-repo** — switch working directory with `/repo` command
 - **Session management** — conversations persist within a session, with 30-min timeout
 - **Cross-platform** — runs on Linux, macOS, Windows
+
+> **Note on permissions:** `claude -p` reads tool permissions from the machine's global `~/.claude/settings.json`, not from any project-level settings. kage does not manage Claude permissions — that's the operator's responsibility. Each repo's `.claude/CLAUDE.md` controls instructions (what Claude should do), while `~/.claude/settings.json` controls permissions (what tools Claude can use).
 
 ## Setup
 
