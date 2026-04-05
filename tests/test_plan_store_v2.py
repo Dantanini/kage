@@ -238,3 +238,55 @@ class TestContextInjection:
         ctx = plan_store.build_context_injection()
         assert "- [x] A" not in ctx
         assert "B" in ctx
+
+
+class TestParseItemMetadata:
+    """Test _parse_item_metadata handles various dash/format styles."""
+
+    def test_standard_format_with_spaces(self):
+        """' — ' (space-emdash-space) should parse correctly."""
+        line = "- [ ] build feature — branch: feat/x, repo: kage"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["task"] == "build feature"
+        assert result["branch"] == "feat/x"
+        assert result["repo"] == "kage"
+
+    def test_emdash_no_leading_space(self):
+        """'）— ' (no space before emdash) should parse correctly."""
+        line = "- [ ] 建立 commit.py（kage 走 PR flow）— **branch: `feat/commit-script`**, **repo: kage**"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["branch"] == "feat/commit-script"
+        assert result["repo"] == "kage"
+
+    def test_emdash_no_spaces(self):
+        """'—' (emdash with no spaces) should parse correctly."""
+        line = "- [ ] do something—branch: fix/bug, repo: kage"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["branch"] == "fix/bug"
+
+    def test_double_hyphen_dash(self):
+        """'--' used as separator should parse correctly."""
+        line = "- [ ] task -- branch: feat/y, repo: kage"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["branch"] == "feat/y"
+
+    def test_bold_markdown_branch(self):
+        """Branch wrapped in **bold** and backticks should parse."""
+        line = "- [ ] task — **branch: `feat/z`**, **repo: kage**"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["branch"] == "feat/z"
+        assert result["repo"] == "kage"
+
+    def test_no_metadata(self):
+        """Line without metadata should return None for branch/repo."""
+        line = "- [ ] just a plain task"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["task"] == "just a plain task"
+        assert result["branch"] is None
+        assert result["repo"] is None
+
+    def test_completed_item(self):
+        """Completed items should also parse metadata."""
+        line = "- [x] done task — branch: fix/a, repo: kage"
+        result = PlanStore._parse_item_metadata(line)
+        assert result["branch"] == "fix/a"
