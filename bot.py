@@ -1464,6 +1464,13 @@ async def post_init(app: Application):
         finally:
             notify_file.unlink(missing_ok=True)
 
+    # Downgrade EXECUTING → PLANNED if no claude subprocess is running
+    if plan_store.status == PlanStatus.EXECUTING:
+        claude_status = await _get_claude_status()
+        if claude_status is None:
+            plan_store.pause()
+            logger.info("Plan status downgraded: EXECUTING → PLANNED (no active subprocess)")
+
     # Recover plan state — notify admin if there's an interrupted plan
     recovery = _build_plan_recovery()
     if recovery:
@@ -1506,11 +1513,17 @@ def main():
     logger.info(f"Bot starting, journal: {journal_path}")
 
     app = Application.builder().token(token).post_init(post_init).build()
+    _register_handlers(app)
+    app.run_polling(drop_pending_updates=True)
+
+
+def _register_handlers(app: Application) -> None:
+    """Register all handlers. Extracted for testability."""
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("done", cmd_done))
     app.add_handler(CommandHandler("restart", cmd_restart))
-    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("status", cmd_status, block=False))
     app.add_handler(CommandHandler("repo", cmd_repo))
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
@@ -1525,8 +1538,6 @@ def main():
     # Unknown commands → treat as regular text (don't silently drop)
     app.add_handler(MessageHandler(filters.COMMAND, handle_unknown_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
