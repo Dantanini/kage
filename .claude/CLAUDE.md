@@ -21,6 +21,7 @@ feature/* or fix/*  →  PR to develop  →  /release  →  PR to main
 - `main`：production，只接受從 `develop` 來的 PR（透過 release.py）
 - `develop`：staging，接受所有 feature/fix PR
 - **開 PR 一律 base `develop`，禁止直接開到 `main`**
+- **禁止在 `main` 上直接編輯檔案** — 如果目前在 main 且需要改 code，先問使用者是否要切 branch，不要直接修改
 - 新功能分支從 `develop` 切出：`git checkout -b feat/xxx develop`
 - 修復分支從 `develop` 切出：`git checkout -b fix/xxx develop`
 - Release 流程由使用者手動呼叫 `/release`，不要自己執行 release.py
