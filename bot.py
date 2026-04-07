@@ -62,6 +62,7 @@ LAST_ACTIVITY_FILE = REPO_DIR / ".last_activity"
 def _touch_activity():
     """Write current timestamp for auto-deploy idle check."""
     LAST_ACTIVITY_FILE.write_text(str(time.time()))
+
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 
 # Repo management — which directory claude -p runs in
@@ -898,7 +899,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif result.startswith("⚠️"):
             await context.bot.send_message(chat_id, f"⚠️ 分析失敗：{result[:500]}")
         else:
-            await context.bot.send_message(chat_id, "⚠️ Opus 回覆格式不正確（沒有 checklist），請重試或調整草稿。")
+            preview = result[:300] if result else "(空回覆)"
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📝 修改草稿", callback_data="plan_record"),
+                    InlineKeyboardButton("🔁 重新分析", callback_data="plan_analyze"),
+                ],
+            ])
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ Opus 回覆格式不正確（需要 `- [ ]` checklist）。\n\nOpus 回覆：\n{preview}",
+                reply_markup=keyboard,
+            )
         return
     elif action == "plan_adjust":
         await query.edit_message_reply_markup(reply_markup=None)
@@ -1280,7 +1292,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif result.startswith("⚠️"):
             await update.message.reply_text(f"⚠️ 調整失敗：{result[:500]}")
         else:
-            await update.message.reply_text("⚠️ Opus 回覆格式不正確（沒有 checklist），請重試。")
+            preview = result[:300] if result else "(空回覆)"
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔧 再次調整", callback_data="plan_adjust"),
+                    InlineKeyboardButton("🔁 重新分析", callback_data="plan_analyze"),
+                ],
+            ])
+            await update.message.reply_text(
+                f"⚠️ Opus 回覆格式不正確（需要 `- [ ]` checklist）。\n\nOpus 回覆：\n{preview}",
+                reply_markup=keyboard,
+            )
         return
 
     # Intercept pending plan ask — answer question then show PR/ask buttons
