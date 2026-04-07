@@ -19,6 +19,8 @@ class Session:
     user_id: int
     intent: str
     model: str
+    repo_name: str | None = None
+    repo_path: str | None = None
     last_active: float = field(default_factory=time.time)
     is_first_message: bool = True
     qa_log: list = field(default_factory=list)  # [(prompt, response), ...]
@@ -118,12 +120,15 @@ class SessionManager:
             return None
         return session
 
-    def create(self, user_id: int, intent: str, model: str) -> Session:
+    def create(self, user_id: int, intent: str, model: str,
+               repo_name: str | None = None, repo_path: str | None = None) -> Session:
         session = Session(
             session_id=str(uuid.uuid4()),
             user_id=user_id,
             intent=intent,
             model=model,
+            repo_name=repo_name,
+            repo_path=repo_path,
         )
         # Attach registered hooks
         for factory in self._start_hook_factories:
@@ -150,9 +155,10 @@ class SessionManager:
             session._save_timer.cancel()
         return session
 
-    def get_or_create(self, user_id: int, intent: str, model: str) -> Session:
+    def get_or_create(self, user_id: int, intent: str, model: str,
+                      repo_name: str | None = None, repo_path: str | None = None) -> Session:
         existing = self.get(user_id)
         if existing:
             existing.last_active = time.time()
             return existing
-        return self.create(user_id, intent, model)
+        return self.create(user_id, intent, model, repo_name=repo_name, repo_path=repo_path)
