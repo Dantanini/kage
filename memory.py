@@ -34,7 +34,8 @@ class MemoryStore:
     """File-backed memory store supporting structured directory or single file."""
 
     def __init__(self, base_dir: str, filename: str = DEFAULT_MEMORY_FILENAME):
-        self._base = Path(base_dir) / "memory"
+        self._repo_root = Path(base_dir)
+        self._base = self._repo_root / "memory"
         self._base.mkdir(parents=True, exist_ok=True)
         self._single_path = self._base / filename
         self._dir_path = self._base / DEFAULT_MEMORY_DIRNAME
@@ -107,12 +108,54 @@ class MemoryStore:
             logger.warning(f"Failed to check recovery marker: {e}")
             return ""
 
+    def read_global_context(self, max_log_lines: int = 10, index_limit: int = 1500) -> str:
+        """Read global knowledge base context from INDEX.md and log.md.
+
+        These files live at the repo root (not in memory/).
+        Returns empty string if neither file exists.
+        """
+        parts = []
+
+        # Read INDEX.md (truncated)
+        index_path = self._repo_root / "INDEX.md"
+        if index_path.exists():
+            try:
+                content = index_path.read_text(encoding="utf-8").strip()
+                if len(content) > index_limit:
+                    content = content[:index_limit] + "\n...(truncated)"
+                parts.append(content)
+            except Exception as e:
+                logger.warning(f"Failed to read INDEX.md: {e}")
+
+        # Read log.md (last N lines)
+        log_path = self._repo_root / "log.md"
+        if log_path.exists():
+            try:
+                lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+                # Keep only lines starting with ## (entries), take last N
+                entries = [l for l in lines if l.startswith("## [")]
+                recent = entries[-max_log_lines:] if len(entries) > max_log_lines else entries
+                if recent:
+                    parts.append("[Recent Operations]\n" + "\n".join(recent))
+            except Exception as e:
+                logger.warning(f"Failed to read log.md: {e}")
+
+        return "\n\n".join(parts) if parts else ""
+
     def build_context_prefix(self) -> str:
         """Build the memory prefix to inject into prompts. Empty string if no memory."""
         content = self.read()
-        if not content:
+        global_ctx = self.read_global_context()
+
+        if not content and not global_ctx:
             return ""
-        return f"[持久記憶 — 來自過去對話的重要脈絡]\n{content}\n[/持久記憶]\n\n"
+
+        parts = []
+        if content:
+            parts.append(f"[持久記憶 — 來自過去對話的重要脈絡]\n{content}\n[/持久記憶]")
+        if global_ctx:
+            parts.append(f"[知識庫概覽]\n{global_ctx}\n[/知識庫概覽]")
+        return "\n\n".join(parts) + "\n\n"
 
     def build_save_prompt(self, qa_pairs: list[tuple[str, str]], max_pairs: int = 5) -> str:
         """Build a prompt that asks Claude to update the memory files.
