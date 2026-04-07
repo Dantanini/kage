@@ -128,9 +128,9 @@ TASK_ASK_MARKER = "❓ 針對"
 
 # --- Session hooks ---
 def _make_git_pull_hook():
-    """Factory: creates a start hook that git-pulls the current repo."""
+    """Factory: creates a start hook that git-pulls the session's repo."""
     async def hook(session):
-        repo_path = _current_repo.get("path", _get_journal_path())
+        repo_path = session.repo_path or _current_repo.get("path", _get_journal_path())
         err = await _git_pull(repo_path)
         if err:
             logger.warning(f"SessionStart git pull failed: {err}")
@@ -922,7 +922,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not result.startswith("⚠️") and spec.validate_output(result):
             plan_store.set_planned(result)
             user_id = query.from_user.id
-            sess = sessions.get_or_create(user_id, "plan", "opus")
+            sess = sessions.get_or_create(
+                user_id, "plan", "opus",
+                repo_name=_current_repo["name"], repo_path=_current_repo["path"],
+            )
             sess.model = "opus"
             preview = result[:3000]
             keyboard = InlineKeyboardMarkup([
@@ -1160,7 +1163,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     model = "sonnet"
     intent = "chat"
-    session = sessions.get_or_create(user_id, intent, model)
+    session = sessions.get_or_create(
+        user_id, intent, model,
+        repo_name=_current_repo["name"], repo_path=_current_repo["path"],
+    )
     resume = not session.is_first_message
 
     if not session.is_first_message:
@@ -1240,7 +1246,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Use existing session logic
     model = "sonnet"
     intent = "chat"
-    session = sessions.get_or_create(user_id, intent, model)
+    session = sessions.get_or_create(
+        user_id, intent, model,
+        repo_name=_current_repo["name"], repo_path=_current_repo["path"],
+    )
     resume = not session.is_first_message
 
     # Use session's current model if already in a session
@@ -1493,7 +1502,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # If command only (no prompt text), just switch model and confirm
     if not prompt:
-        session = sessions.get_or_create(user_id, intent, model)
+        session = sessions.get_or_create(
+            user_id, intent, model,
+            repo_name=_current_repo["name"], repo_path=_current_repo["path"],
+        )
         session.model = model
         session.intent = intent
         await update.message.reply_text(f"已切換到 {model}")
@@ -1513,7 +1525,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # Get or create session
-    session = sessions.get_or_create(user_id, intent, model)
+    session = sessions.get_or_create(
+        user_id, intent, model,
+        repo_name=_current_repo["name"], repo_path=_current_repo["path"],
+    )
     resume = not session.is_first_message
 
     # Run start hooks on first message (git pull, etc.)
@@ -1552,7 +1567,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     typing_task = asyncio.create_task(keep_typing())
 
-    result = await _run_claude(prompt, model, session.session_id, resume=resume, inject_plan=(intent == "chat"))
+    result = await _run_claude(prompt, model, session.session_id, resume=resume, cwd=session.repo_path, inject_plan=(intent == "chat"))
 
     typing_task.cancel()
 
