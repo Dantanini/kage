@@ -80,6 +80,42 @@ sessions = SessionManager(timeout_minutes=TIMEOUT_MINUTES)
 memory_store = MemoryStore(base_dir=REPOS["journal"])
 plan_store = PlanStore(local_dir=str(REPO_DIR / ".local"))
 
+class PlanExecutionQueue:
+    """Ordered queue of plan items selected by user via buttons."""
+
+    def __init__(self):
+        self._queue: list[dict] = []  # [{"index": int, "task": str}, ...]
+
+    def add(self, index: int, task: str) -> bool:
+        """Add item to queue. Returns False if already selected."""
+        if self.is_selected(index):
+            return False
+        self._queue.append({"index": index, "task": task})
+        return True
+
+    def is_selected(self, index: int) -> bool:
+        return any(item["index"] == index for item in self._queue)
+
+    def position(self, index: int) -> int | None:
+        """1-based position in queue, or None if not selected."""
+        for i, item in enumerate(self._queue):
+            if item["index"] == index:
+                return i + 1
+        return None
+
+    def items(self) -> list[dict]:
+        return list(self._queue)
+
+    def size(self) -> int:
+        return len(self._queue)
+
+    def clear(self):
+        self._queue.clear()
+
+
+# Per-chat execution queues
+_plan_queues: dict[int, PlanExecutionQueue] = {}
+
 # Track pending plan record state (chat_id → True when waiting for next message)
 _pending_plan_record: dict[int, bool] = {}
 # Track pending plan adjust state (chat_id → True when waiting for adjust feedback)
@@ -892,7 +928,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("🔧 調整", callback_data="plan_adjust"),
-                    InlineKeyboardButton("🔨 執行", callback_data="plan_execute"),
+                    InlineKeyboardButton("🔨 全部執行", callback_data="plan_execute"),
+                ],
+                [
+                    InlineKeyboardButton("📋 選擇順序", callback_data="plan_select"),
                 ],
             ])
             await context.bot.send_message(chat_id, f"📋 規劃結果：\n\n{preview}", reply_markup=keyboard)
@@ -911,6 +950,75 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚠️ Opus 回覆格式不正確（需要 `- [ ]` checklist）。\n\nOpus 回覆：\n{preview}",
                 reply_markup=keyboard,
             )
+        return
+    elif action == "plan_select":
+        # Show each item as a button for user to select execution order
+        await query.edit_message_reply_markup(reply_markup=None)
+        items = plan_store.parse_planned_items()
+        if not items:
+            await context.bot.send_message(chat_id, "📭 沒有項目可選擇。")
+            return
+        _plan_queues[chat_id] = PlanExecutionQueue()
+        buttons = []
+        for i, item in enumerate(items):
+            task = item["task"][:50]
+            buttons.append([InlineKeyboardButton(f"⬜ {i+1}. {task}", callback_data=f"plan_queue_{i}")])
+        buttons.append([InlineKeyboardButton("▶️ 開始執行已選項目", callback_data="plan_queue_go")])
+        keyboard = InlineKeyboardMarkup(buttons)
+        await context.bot.send_message(chat_id, "📋 點選項目加入執行佇列（按點擊順序執行）：", reply_markup=keyboard)
+        return
+    elif action.startswith("plan_queue_") and action != "plan_queue_go":
+        idx = int(action[len("plan_queue_"):])
+        queue = _plan_queues.get(chat_id)
+        if not queue:
+            return
+        items = plan_store.parse_planned_items()
+        if idx >= len(items):
+            return
+        queue.add(idx, items[idx]["task"])
+        # Rebuild buttons with updated state
+        buttons = []
+        for i, item in enumerate(items):
+            task = item["task"][:50]
+            pos = queue.position(i)
+            if pos is not None:
+                label = f"✅ #{pos} {task}"
+            else:
+                label = f"⬜ {i+1}. {task}"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"plan_queue_{i}")])
+        buttons.append([InlineKeyboardButton(f"▶️ 開始執行已選項目（{queue.size()}）", callback_data="plan_queue_go")])
+        keyboard = InlineKeyboardMarkup(buttons)
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+        return
+    elif action == "plan_queue_go":
+        queue = _plan_queues.get(chat_id)
+        if not queue or queue.size() == 0:
+            await context.bot.send_message(chat_id, "📭 還沒選擇任何項目。")
+            return
+        await query.edit_message_reply_markup(reply_markup=None)
+        # Reorder planned items according to queue
+        items = plan_store.parse_planned_items()
+        selected = queue.items()
+        reordered_lines = []
+        for sel in selected:
+            idx = sel["index"]
+            if idx < len(items):
+                item = items[idx]
+                branch_info = ""
+                if item.get("branch"):
+                    branch_info += f"branch: {item['branch']}"
+                if item.get("repo"):
+                    branch_info += f", repo: {item['repo']}" if branch_info else f"repo: {item['repo']}"
+                line = f"- [ ] {item['task']}"
+                if branch_info:
+                    line += f" — {branch_info}"
+                reordered_lines.append(line)
+        # Replace planned with reordered selection
+        plan_store.set_planned("\n".join(reordered_lines))
+        plan_store.set_executing()
+        _plan_queues.pop(chat_id, None)
+        await context.bot.send_message(chat_id, f"🔨 開始執行 {len(reordered_lines)} 個項目...")
+        await _run_next_plan_item(chat_id, context)
         return
     elif action == "plan_adjust":
         await query.edit_message_reply_markup(reply_markup=None)
