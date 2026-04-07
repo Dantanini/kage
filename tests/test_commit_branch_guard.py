@@ -59,10 +59,10 @@ class TestBranchGuard:
 
 # Better approach: import and test the function directly
 import importlib.util
-import os
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
-    "commit", os.path.expanduser("~/kage/scripts/commit.py")
+    "commit", Path(__file__).resolve().parent.parent / "scripts" / "commit.py"
 )
 commit_mod = importlib.util.module_from_spec(spec)
 
