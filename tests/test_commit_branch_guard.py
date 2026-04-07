@@ -90,7 +90,9 @@ class TestBranchGuardUnit:
                 commit_mod.main()
             output = capsys.readouterr().out
             assert "main" in output
-            assert "feature branch" in output.lower() or "feat/" in output
+            assert "git stash" in output
+            assert "git checkout -b" in output
+            assert "stash pop" in output
 
     @patch("subprocess.run")
     def test_allows_commit_on_feature_branch(self, mock_run):
