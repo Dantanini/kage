@@ -28,9 +28,18 @@ def main():
         print("沒有變更需要 commit")
         return
 
-    # Show current branch
+    # Branch guard: block commits on main
     branch = run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
-    print(f"目前分支: {branch.stdout.strip()}")
+    branch_name = branch.stdout.strip()
+    print(f"目前分支: {branch_name}")
+
+    if branch_name == "main":
+        print("❌ 禁止在 main 上直接 commit。請依以下步驟修復：")
+        print("   1. git stash")
+        print("   2. git checkout -b feat/your-feature develop")
+        print("   3. git stash pop")
+        print("   4. 重新執行 commit.py")
+        sys.exit(1)
 
     # Stage all changes
     result = run(["git", "add", "-A"])
