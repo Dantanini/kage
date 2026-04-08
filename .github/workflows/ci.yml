@@ -7,6 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  pr-branch-guard:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check source branch
+        run: |
+          HEAD="${{ github.head_ref }}"
+          if [[ "$HEAD" == "develop" || "$HEAD" == hotfix/* ]]; then
+            echo "✅ Allowed: $HEAD → main"
+          else
+            echo "❌ Only develop and hotfix/* can open PRs to main. Got: $HEAD"
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
 
