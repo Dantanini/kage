@@ -119,7 +119,7 @@ kage/
 ├── scripts/
 │   ├── restart.sh      ← Safe bot restart (kills rogue processes)
 │   └── notify.py       ← Cron notification with inline buttons
-├── tests/              ← pytest test suite (132 tests)
+├── tests/              ← pytest test suite (370 tests)
 ├── .github/workflows/  ← GitHub Actions CI
 ├── .claude/
 │   └── CLAUDE.md       ← Operational rules for developers
