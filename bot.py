@@ -63,6 +63,14 @@ def _touch_activity():
     """Write current timestamp for auto-deploy idle check."""
     LAST_ACTIVITY_FILE.write_text(str(time.time()))
 
+
+def _resolve_task_repo(repo_name: str | None, repos: dict[str, str] | None = None) -> str | None:
+    """Resolve a task's repo name to its path. Returns None if unknown."""
+    if not repo_name:
+        return None
+    target = repos or REPOS
+    return target.get(repo_name)
+
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 
 # Repo management — which directory claude -p runs in
@@ -1320,15 +1328,18 @@ async def _run_next_plan_item(chat_id: int, context: ContextTypes.DEFAULT_TYPE) 
     task_info = parsed[0] if parsed else {"task": item.replace("- [ ]", "").strip(), "branch": None, "repo": None}
     task_desc = task_info["task"]
     planned_branch = task_info.get("branch") or ""
+    task_repo = task_info.get("repo")
+    task_cwd = _resolve_task_repo(task_repo)
 
     current = len(pending)
     idx = total - current + 1
-    await context.bot.send_message(chat_id, f"▶️ [{idx}] 正在執行：{task_desc[:100]}")
+    repo_label = f" [{task_repo}]" if task_repo else ""
+    await context.bot.send_message(chat_id, f"▶️ [{idx}]{repo_label} 正在執行：{task_desc[:100]}")
 
     import uuid as _uuid
     spec = PLAN_SPECS["plan_execute"]
     prompt = build_prompt(spec, {"task": task_desc})
-    result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False)
+    result = await _run_claude(prompt, spec.model, str(_uuid.uuid4()), resume=False, cwd=task_cwd)
 
     if not result.startswith("⚠️"):
         # Detect branch: use planned branch or try git branch --show-current
