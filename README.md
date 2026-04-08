@@ -1,15 +1,15 @@
-# kage (影)
+# Kage (影)
 
 Personal AI assistant via Telegram — a thin relay to Claude Code CLI.
 
 ## What is this
 
-kage is a lightweight Telegram bot that bridges your messages to [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). Instead of building AI logic into the bot, kage keeps itself thin and delegates all intelligence to Claude Code's native capabilities — Skills, Hooks, CLAUDE.md, and tool use.
+Kage is a lightweight Telegram bot that bridges your messages to [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). Instead of building AI logic into the bot, Kage keeps itself thin and delegates all intelligence to Claude Code's native capabilities — Skills, Hooks, CLAUDE.md, and tool use.
 
 ## Architecture
 
 ```
-Telegram → kage (thin relay) → claude -p
+Telegram → Kage (thin relay) → claude -p
                                    ↓
                               works in selected repo's directory
                               reads repo's .claude/CLAUDE.md
