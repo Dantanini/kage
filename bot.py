@@ -489,9 +489,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             git_errors.append(f"{name}: {err}")
 
     if git_errors:
-        error_msg = "⚠️ Git 操作失敗，重啟已取消：\n" + "\n".join(git_errors) + "\n\n請手動處理後再重啟。"
+        error_msg = "⚠️ Git 操作失敗（重啟仍會繼續）：\n" + "\n".join(git_errors) + "\n\n重啟後請檢查並處理。"
         await update.message.reply_text(error_msg)
-        return
 
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
