@@ -466,7 +466,8 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Pull both repos before restart
     await update.message.reply_text("📥 正在拉取最新程式碼...")
-    pull_errors = []
+    git_errors = []
+
     # Ensure kage is on main before pulling
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -475,18 +476,22 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            err_msg = stderr.decode().strip() or stdout.decode().strip()
+            git_errors.append(f"git checkout main failed: {err_msg}")
     except Exception as e:
-        logger.warning(f"git checkout main failed: {e}")
+        git_errors.append(f"git checkout main exception: {e}")
+
     for name, path in [("kage", str(REPO_DIR)), ("journal", REPOS["journal"])]:
         err = await _git_pull(path)
         if err:
-            pull_errors.append(f"{name}: {err}")
+            git_errors.append(f"{name}: {err}")
 
-    if pull_errors:
-        await update.message.reply_text(
-            "⚠️ Git pull 失敗（重啟仍會繼續）：\n" + "\n".join(pull_errors)
-        )
+    if git_errors:
+        error_msg = "⚠️ Git 操作失敗，重啟已取消：\n" + "\n".join(git_errors) + "\n\n請手動處理後再重啟。"
+        await update.message.reply_text(error_msg)
+        return
 
     await update.message.reply_text("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
