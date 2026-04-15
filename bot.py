@@ -73,12 +73,10 @@ def _resolve_task_repo(repo_name: str | None, repos: dict[str, str] | None = Non
 
 TIMEOUT_MINUTES = CONFIG["session"]["timeout_minutes"]
 
-# Repo management — which directory claude -p runs in
-REPOS = {
-    "journal": str(Path(os.environ.get("DEV_JOURNAL_PATH", "")) or Path.home() / "dev-journal"),
-    "kage": str(Path.home() / "kage"),
-    "home": str(Path.home()),
-}
+# Repo management — dynamic registry
+from repo_manager import RepoRegistry, clone_repo, extract_repo_name
+repo_registry = RepoRegistry()
+REPOS = repo_registry.as_dict()  # backward compat for existing code
 _current_repo: dict[str, str] = {"name": "journal", "path": REPOS["journal"]}
 
 # Session manager
@@ -336,7 +334,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/course — 開始學習（Opus）\n\n"
         "⚙️ 切換：\n"
         "/opus — 整段切 Opus  /sonnet — 切回\n"
-        "/repo — 切工作目錄  /restart — 重啟"
+        "/repo — 切工作目錄  /clone — 新增 repo\n"
+        "/restart — 重啟"
     )
 
 
@@ -435,22 +434,57 @@ async def cmd_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = update.message.text.split(None, 1)
     if len(args) < 2:
         lines = [f"目前：{_current_repo['name']} ({_current_repo['path']})\n", "可用 repo："]
-        for name, path in REPOS.items():
-            exists = "✅" if Path(path).exists() else "❌"
-            lines.append(f"  {exists} /repo {name} → {path}")
+        for info in repo_registry.list_all():
+            exists = "✅" if info["exists"] else "❌"
+            builtin = "📌" if info["builtin"] else "📁"
+            lines.append(f"  {exists}{builtin} /repo {info['name']} → {info['path']}")
+        lines.append("\n/clone <git_url> [name] — 新增 repo")
         await update.message.reply_text("\n".join(lines))
         return
 
     name = args[1].strip().lower()
-    if name not in REPOS:
-        await update.message.reply_text(f"未知 repo: {name}\n可用: {', '.join(REPOS.keys())}")
+    path = repo_registry.get_path(name)
+    if not path:
+        await update.message.reply_text(f"未知 repo: {name}\n可用: {', '.join(repo_registry.list_names())}")
         return
 
     _current_repo["name"] = name
-    _current_repo["path"] = REPOS[name]
+    _current_repo["path"] = path
     # Close current session since we're switching context
     await sessions.close(update.effective_user.id)
-    await update.message.reply_text(f"已切換到 {name} ({REPOS[name]})\nSession 已重置")
+    await update.message.reply_text(f"已切換到 {name} ({path})\nSession 已重置")
+
+
+async def cmd_clone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clone a git repo and register it. Usage: /clone <url> [name]"""
+    if not await _check_auth(update):
+        return
+    args = update.message.text.split()
+    if len(args) < 2:
+        await update.message.reply_text("用法：/clone <git_url> [name]\n例：/clone https://github.com/user/repo.git")
+        return
+
+    url = args[1]
+    custom_name = args[2] if len(args) > 2 else None
+    repo_name = custom_name or extract_repo_name(url)
+
+    # Check if already registered
+    if repo_registry.get_path(repo_name):
+        await update.message.reply_text(f"Repo '{repo_name}' 已存在。用 /repo {repo_name} 切換。")
+        return
+
+    await update.message.reply_text(f"正在 clone {url}...")
+
+    try:
+        base_dir = str(Path.home() / "repos")
+        Path(base_dir).mkdir(parents=True, exist_ok=True)
+        path = clone_repo(url, base_dir=base_dir, name=custom_name)
+        repo_registry.add(repo_name, path)
+        # Update backward-compat dict
+        REPOS[repo_name] = path
+        await update.message.reply_text(f"✅ Clone 完成！\n{repo_name} → {path}\n\n用 /repo {repo_name} 切換")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Clone 失敗：{e}")
 
 
 async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1690,6 +1724,7 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("restart", cmd_restart))
     app.add_handler(CommandHandler("status", cmd_status, block=False))
     app.add_handler(CommandHandler("repo", cmd_repo))
+    app.add_handler(CommandHandler("clone", cmd_clone))
     app.add_handler(CommandHandler("morning", cmd_morning))
     app.add_handler(CommandHandler("evening", cmd_evening))
     app.add_handler(CommandHandler("plan", cmd_plan))
