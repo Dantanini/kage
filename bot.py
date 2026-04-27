@@ -1593,7 +1593,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Use session's current model (preserves /opus switch)
         model = session.model
 
-    # Progress feedback — send status then keep typing indicator
+    # Progress feedback label (used in placeholder + during streaming)
     INTENT_LABEL = {
         "course": "📚 課程模式",
         "architecture": "🏗️ 架構思考",
@@ -1601,33 +1601,93 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "note": "📝 筆記模式",
         "chat": "💬 對話",
     }
-    status_msg = await update.message.reply_text(
-        f"{INTENT_LABEL.get(intent, '💬')} | {model} | 思考中..."
-    )
+    intent_label = INTENT_LABEL.get(intent, '💬')
 
-    # Keep sending typing action while Claude thinks
-    async def keep_typing():
+    # Build claude command with stream-json flags (mirrors _run_claude_once setup)
+    from streaming import claude_stream, stream_to_telegram, TG_MAX_MESSAGE_CHARS
+    claude_bin = _find_claude()
+    work_dir = session.repo_path
+    cmd = [claude_bin, "-p", "--model", model,
+           "--output-format", "stream-json",
+           "--include-partial-messages",
+           "--verbose"]
+    if resume:
+        cmd.extend(["--resume", session.session_id])
+    else:
+        cmd.extend(["--session-id", session.session_id])
+
+    # Inject memory + plan context (same logic as _run_claude_once for first turn)
+    if not resume:
+        recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
+        memory_prefix = memory_store.build_context_prefix()
+        plan_prefix = plan_store.build_context_injection() if intent == "chat" else ""
+        full_prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}{plan_prefix}\n{prompt}"
+    else:
+        full_prompt = prompt
+
+    # Streaming callbacks — closure over status_msg holder
+    status_msg_holder: dict = {}
+
+    async def initial_send(_text: str):
+        msg = await update.message.reply_text(f"{intent_label} | {model} | 生成中...")
+        status_msg_holder['msg'] = msg
+
+    async def update_msg(text: str) -> bool:
+        msg = status_msg_holder.get('msg')
+        if not msg:
+            return False
+        bot = update.get_bot()
+        # Try official sendMessageDraft first (Bot API 9.5, native streaming animation)
         try:
-            while True:
-                await update.message.chat.send_action("typing")
-                await asyncio.sleep(5)
-        except asyncio.CancelledError:
-            pass
+            await bot.send_message_draft(
+                chat_id=update.effective_chat.id,
+                text=text,
+            )
+            return True
+        except (AttributeError, TypeError):
+            pass  # library/server doesn't support, fall back
+        except Exception as e:
+            logger.debug(f"send_message_draft failed: {e}")
+        # Fallback: edit_text
+        try:
+            await msg.edit_text(text)
+            return True
+        except Exception as e:
+            logger.debug(f"edit_text failed: {e}")
+            return False
 
-    typing_task = asyncio.create_task(keep_typing())
+    async def long_split(full_text: str):
+        msg = status_msg_holder.get('msg')
+        if msg:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+        for i in range(0, len(full_text), TG_MAX_MESSAGE_CHARS):
+            await update.message.reply_text(full_text[i:i + TG_MAX_MESSAGE_CHARS])
 
-    result = await _run_claude(prompt, model, session.session_id, resume=resume, cwd=session.repo_path, inject_plan=(intent == "chat"))
-
-    typing_task.cancel()
-
-    # Delete status message, send actual response
+    # Run streaming pipeline
     try:
-        await status_msg.delete()
-    except Exception:
-        pass
+        text_stream = claude_stream(cmd, full_prompt, cwd=work_dir)
+        result = await stream_to_telegram(
+            initial_send=initial_send,
+            update_message=update_msg,
+            text_stream=text_stream,
+            long_message_split=long_split,
+        )
+    except Exception as e:
+        result = f"⚠️ Claude 執行失敗：{str(e)[:400]}"
+        msg = status_msg_holder.get('msg')
+        if msg:
+            try:
+                await msg.edit_text(result)
+            except Exception:
+                await update.message.reply_text(result)
+        else:
+            await update.message.reply_text(result)
 
     # Only mark session as "has talked to Claude" if it actually succeeded
-    if not result.startswith("⚠️"):
+    if not result.startswith("⚠️") and result != "（無回應）":
         session.touch()
         session.qa_log.append((prompt, result))
 
@@ -1637,13 +1697,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             flush_result = await _flush_qa_log(session)
             if flush_result and not flush_result.startswith("⚠️"):
                 await update.message.reply_text("✅ 學習筆記已自動儲存，繼續對話")
-
-    # Split long messages (Telegram limit: 4096 chars)
-    if len(result) <= 4000:
-        await update.message.reply_text(result)
-    else:
-        for i in range(0, len(result), 4000):
-            await update.message.reply_text(result[i:i + 4000])
 
 
 async def post_init(app: Application):
