@@ -39,6 +39,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
 )
+# httpx INFO logs the full request URL, which leaks bot token in TG API calls
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Load .env file early (before any env var reads)
