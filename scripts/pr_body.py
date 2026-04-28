@@ -29,8 +29,10 @@ def get_commits(base_ref: str = "origin/develop") -> str:
 
 
 def get_diff_stats(base_ref: str = "origin/develop") -> str:
+    # Triple-dot diff = changes from merge-base, so a stale branch doesn't
+    # appear to "revert" commits that landed on the base after we branched.
     return _run_git([
-        "git", "diff", "--stat", f"{base_ref}..HEAD"
+        "git", "diff", "--stat", f"{base_ref}...HEAD"
     ])
 
 
