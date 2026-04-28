@@ -264,3 +264,42 @@ async def test_claude_stream_parses_text_deltas_only():
             deltas.append(chunk)
 
     assert deltas == ["Hello ", "World"]
+
+
+@pytest.mark.asyncio
+async def test_claude_stream_passes_large_buffer_limit():
+    """claude_stream must raise StreamReader limit above 64KB so partial-message
+    JSON lines (long markdown/code/tool results) don't trigger
+    `ValueError: Separator is found, but chunk is longer than limit`."""
+    from streaming import claude_stream, STREAM_READER_LIMIT
+
+    fake_stdout = MagicMock()
+    fake_stdout.readline = AsyncMock(return_value=b"")
+
+    fake_stdin = MagicMock()
+    fake_stdin.write = MagicMock()
+    fake_stdin.drain = AsyncMock()
+    fake_stdin.close = MagicMock()
+
+    fake_stderr = MagicMock()
+    fake_stderr.read = AsyncMock(return_value=b"")
+
+    fake_proc = MagicMock()
+    fake_proc.stdin = fake_stdin
+    fake_proc.stdout = fake_stdout
+    fake_proc.stderr = fake_stderr
+    fake_proc.wait = AsyncMock(return_value=0)
+    fake_proc.returncode = 0
+
+    mock_exec = AsyncMock(return_value=fake_proc)
+    with patch("asyncio.create_subprocess_exec", mock_exec):
+        async for _ in claude_stream(["claude", "-p"], "test prompt"):
+            pass
+
+    _, kwargs = mock_exec.call_args
+    assert "limit" in kwargs, "claude_stream must pass limit= to create_subprocess_exec"
+    assert kwargs["limit"] > 64 * 1024, (
+        f"limit={kwargs['limit']} must exceed asyncio default 64KB to handle "
+        f"large partial-message JSON lines"
+    )
+    assert kwargs["limit"] == STREAM_READER_LIMIT
