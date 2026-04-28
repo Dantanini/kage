@@ -1,5 +1,6 @@
 """Tests for release script — commit parsing and PR content generation."""
 
+import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -149,3 +150,64 @@ class TestGetCommitsBetween:
         get_commits_between(base="main", head="release")
         args = mock_run.call_args[0][0]
         assert "origin/main..origin/release" in " ".join(args)
+
+
+class TestSyncDevelopWithMain:
+    """sync_develop_with_main brings main's merge commit back into develop."""
+
+    @patch("release.subprocess.run")
+    def test_sync_runs_expected_git_commands(self, mock_run):
+        from release import sync_develop_with_main
+        mock_run.return_value = MagicMock(returncode=0)
+
+        sync_develop_with_main()
+
+        # Collect all commands run
+        all_commands = [" ".join(c.args[0]) for c in mock_run.call_args_list]
+        joined = " ; ".join(all_commands)
+
+        # Must fetch, switch to develop, merge main, push
+        assert "git fetch" in joined
+        assert "git checkout develop" in joined or "git switch develop" in joined
+        assert "git merge origin/main" in joined
+        assert "git push" in joined
+
+    @patch("release.subprocess.run")
+    def test_sync_uses_check_true_so_failures_propagate(self, mock_run):
+        from release import sync_develop_with_main
+        mock_run.return_value = MagicMock(returncode=0)
+
+        sync_develop_with_main()
+
+        # Every subprocess.run call must have check=True so a merge conflict
+        # or push failure is surfaced to the user, not silently swallowed.
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("check") is True, (
+                f"sync subprocess call missing check=True: {call}"
+            )
+
+
+class TestMainSyncMode:
+    """`python3 release.py --sync` runs sync, not PR creation."""
+
+    @patch("release.create_pr")
+    @patch("release.sync_develop_with_main")
+    def test_sync_flag_calls_sync_only(self, mock_sync, mock_create):
+        from release import main
+        with patch.object(sys, "argv", ["release.py", "--sync"]):
+            main()
+        mock_sync.assert_called_once()
+        mock_create.assert_not_called()
+
+    @patch("release.subprocess.run")
+    @patch("release.create_pr")
+    @patch("release.get_commits_between")
+    def test_default_mode_prints_sync_hint(self, mock_log, mock_create, mock_run, capsys):
+        """After creating the PR, release.py must remind user how to sync."""
+        from release import main
+        mock_log.return_value = "abc1234 feat: x"
+        mock_run.return_value = MagicMock(returncode=0)
+        with patch.object(sys, "argv", ["release.py"]):
+            main()
+        out = capsys.readouterr().out
+        assert "--sync" in out
