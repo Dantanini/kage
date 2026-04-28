@@ -146,11 +146,63 @@ def _make_git_pull_hook():
     return hook
 
 
+async def _check_journal_safe_for_memory_save(journal_path: str) -> tuple[bool, str]:
+    """Verify dev-journal is on main with a clean working tree.
+
+    Returns (True, "") if safe to write memory.
+    Returns (False, reason) if unsafe \u2014 caller should abort and warn the user.
+    Refusing on a feature branch or dirty tree avoids mixing memory updates
+    with in-progress work.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "branch", "--show-current",
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return False, f"git branch failed: {stderr.decode().strip() or stdout.decode().strip()}"
+        branch = stdout.decode().strip()
+        if branch != "main":
+            return False, f"dev-journal not on main (current: {branch})"
+
+        proc = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain",
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return False, f"git status failed: {stderr.decode().strip() or stdout.decode().strip()}"
+        porcelain = stdout.decode().strip()
+        if porcelain:
+            return False, f"dev-journal working tree dirty:\n{porcelain[:500]}"
+    except Exception as e:
+        return False, f"git check failed: {e}"
+
+    return True, ""
+
+
 def _make_memory_save_hook():
     """Factory: creates an end hook that saves session memory."""
     async def hook(session):
         if not session.qa_log:
             return
+
+        ok, reason = await _check_journal_safe_for_memory_save(REPOS["journal"])
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
+        if not ok:
+            logger.warning(f"memory save aborted: {reason}")
+            send_telegram_message(
+                f"\u26a0\ufe0f \u8a18\u61b6\u5132\u5b58\u5df2\u8df3\u904e\n\n{reason}\n\n\u8acb\u628a dev-journal \u5207\u56de main \u4e26 commit / stash \u5de5\u4f5c\u4e2d\u7684\u6539\u52d5\uff0c\u4e0b\u6b21 session \u7d50\u675f\u6703\u518d\u8a66\u4e00\u6b21\u3002",
+                token=token, chat_id=admin_id,
+            )
+            return
+
         prompt = memory_store.build_save_prompt(session.qa_log)
         if not prompt:
             return
@@ -158,8 +210,6 @@ def _make_memory_save_hook():
         result = await _run_claude(
             prompt, "sonnet", str(_uuid.uuid4()), resume=False,
         )
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
         if result.startswith("\u26a0\ufe0f"):
             logger.warning(f"Memory save failed: {result[:200]}")
             msg = build_memory_save_message(success=False, error=result[:100])
