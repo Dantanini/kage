@@ -21,20 +21,21 @@ def _load_module():
 
 
 class TestGenerateBody:
-    """generate_body composes Changes + Diff stats sections."""
+    """generate_body uses the project's standard PR template."""
 
     @patch("subprocess.run")
-    def test_includes_changes_section_with_commits(self, mock_run):
+    def test_includes_summary_section(self, mock_run):
         pr_body = _load_module()
-        # First call = git log, second = git diff --stat
+        # log, diff --stat, diff --name-only (test files)
         mock_run.side_effect = [
             MagicMock(stdout="- fix: add foo\n- fix: add bar\n", returncode=0),
             MagicMock(stdout=" foo.py | 5 +++++\n bar.py | 3 +++\n", returncode=0),
+            MagicMock(stdout="", returncode=0),
         ]
 
         body = pr_body.generate_body()
 
-        assert "## Changes" in body
+        assert "## Summary" in body
         assert "fix: add foo" in body
         assert "fix: add bar" in body
 
@@ -44,12 +45,67 @@ class TestGenerateBody:
         mock_run.side_effect = [
             MagicMock(stdout="- fix: x\n", returncode=0),
             MagicMock(stdout=" foo.py | 5 +++++\n 1 file changed, 5 insertions(+)\n", returncode=0),
+            MagicMock(stdout="", returncode=0),
         ]
 
         body = pr_body.generate_body()
 
-        assert "Diff stats" in body or "diff" in body.lower()
+        assert "## Diff stats" in body
         assert "foo.py" in body
+
+    @patch("subprocess.run")
+    def test_includes_test_plan_section(self, mock_run):
+        pr_body = _load_module()
+        mock_run.side_effect = [
+            MagicMock(stdout="- fix: x\n", returncode=0),
+            MagicMock(stdout=" foo.py | 1 +\n", returncode=0),
+            MagicMock(stdout="", returncode=0),
+        ]
+
+        body = pr_body.generate_body()
+
+        assert "## Test plan" in body
+        assert "[ ] CI passes" in body
+
+    @patch("subprocess.run")
+    def test_test_plan_counts_test_files_when_changed(self, mock_run):
+        pr_body = _load_module()
+        mock_run.side_effect = [
+            MagicMock(stdout="- fix: x\n", returncode=0),
+            MagicMock(stdout=" foo.py | 1 +\n", returncode=0),
+            MagicMock(stdout="tests/test_foo.py\ntests/test_bar.py\n", returncode=0),
+        ]
+
+        body = pr_body.generate_body()
+
+        assert "2 test file(s) changed" in body
+
+    @patch("subprocess.run")
+    def test_test_plan_says_no_test_changes_when_none(self, mock_run):
+        pr_body = _load_module()
+        mock_run.side_effect = [
+            MagicMock(stdout="- docs: x\n", returncode=0),
+            MagicMock(stdout=" README.md | 1 +\n", returncode=0),
+            MagicMock(stdout="", returncode=0),
+        ]
+
+        body = pr_body.generate_body()
+
+        assert "no test changes" in body
+
+    @patch("subprocess.run")
+    def test_includes_claude_code_attribution(self, mock_run):
+        pr_body = _load_module()
+        mock_run.side_effect = [
+            MagicMock(stdout="- x\n", returncode=0),
+            MagicMock(stdout="", returncode=0),
+            MagicMock(stdout="", returncode=0),
+        ]
+
+        body = pr_body.generate_body()
+
+        assert "Claude Code" in body
+        assert "claude.com/claude-code" in body
 
     @patch("subprocess.run")
     def test_handles_no_commits(self, mock_run):
@@ -57,17 +113,20 @@ class TestGenerateBody:
         mock_run.side_effect = [
             MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
+            MagicMock(stdout="", returncode=0),
         ]
 
         body = pr_body.generate_body()
 
-        # Should produce something rather than an empty string
-        assert body.strip() != ""
+        # Should still produce a Test plan + attribution
+        assert "## Test plan" in body
+        assert "Claude Code" in body
 
     @patch("subprocess.run")
     def test_uses_origin_develop_by_default(self, mock_run):
         pr_body = _load_module()
         mock_run.side_effect = [
+            MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
         ]
@@ -79,29 +138,24 @@ class TestGenerateBody:
 
     @patch("subprocess.run")
     def test_diff_uses_triple_dot_so_stale_branch_does_not_appear_to_revert(self, mock_run):
-        """diff stats must use `A...HEAD` (merge-base) not `A..HEAD`.
-
-        Otherwise, when origin/develop advances after we branch, the diff stats
-        falsely show those advancing commits as 'reverted by us'.
-        """
+        """diff stats must use `A...HEAD` (merge-base) not `A..HEAD`."""
         pr_body = _load_module()
         mock_run.side_effect = [
+            MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
         ]
 
         pr_body.generate_body()
 
-        # Second call is the diff
         diff_call_args = " ".join(mock_run.call_args_list[1].args[0])
-        assert "origin/develop...HEAD" in diff_call_args, (
-            f"diff must use 3-dot syntax, got: {diff_call_args}"
-        )
+        assert "origin/develop...HEAD" in diff_call_args
 
     @patch("subprocess.run")
     def test_custom_base_ref(self, mock_run):
         pr_body = _load_module()
         mock_run.side_effect = [
+            MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
             MagicMock(stdout="", returncode=0),
         ]

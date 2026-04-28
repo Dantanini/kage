@@ -36,19 +36,58 @@ def get_diff_stats(base_ref: str = "origin/develop") -> str:
     ])
 
 
+def get_test_files_changed(base_ref: str = "origin/develop") -> list[str]:
+    out = _run_git([
+        "git", "diff", "--name-only", f"{base_ref}...HEAD"
+    ])
+    return [f for f in out.splitlines() if f.startswith("tests/")]
+
+
 def generate_body(base_ref: str = "origin/develop") -> str:
+    """Generate a PR body in the project's standard template:
+
+    ## Summary
+    - bullet (one per commit)
+
+    ## Diff stats
+    ```
+    ...
+    ```
+
+    ## Test plan
+    - [x] tests pass / no test changes
+    - [ ] CI passes
+
+    🤖 Generated with [Claude Code](https://claude.com/claude-code)
+    """
     commits = get_commits(base_ref)
     stats = get_diff_stats(base_ref)
+    test_files = get_test_files_changed(base_ref)
 
-    parts = []
+    sections = []
+
     if commits:
-        parts.append(f"## Changes\n\n{commits}")
-    if stats:
-        parts.append(f"## Diff stats\n\n```\n{stats}\n```")
+        sections.append(f"## Summary\n\n{commits}")
+    else:
+        sections.append(f"## Summary\n\n(no commits vs {base_ref})")
 
-    if not parts:
-        return f"(no commits or diff vs {base_ref})"
-    return "\n\n".join(parts)
+    if stats:
+        sections.append(f"## Diff stats\n\n```\n{stats}\n```")
+
+    test_line = (
+        f"- [x] {len(test_files)} test file(s) changed; run full suite locally"
+        if test_files
+        else "- [x] no test changes (config / docs only)"
+    )
+    sections.append(
+        "## Test plan\n\n"
+        f"{test_line}\n"
+        "- [ ] CI passes"
+    )
+
+    sections.append("🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+
+    return "\n\n".join(sections)
 
 
 def main():
