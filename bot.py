@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -1625,69 +1626,129 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         full_prompt = prompt
 
-    # Streaming callbacks — closure over status_msg holder
-    status_msg_holder: dict = {}
+    # Streaming callbacks — sendMessageDraft (animated) with placeholder + edit_text fallback.
+    # draft_id must be non-zero, unique per stream so TG can animate transitions on the same draft.
+    draft_id = secrets.randbits(31) or 1
+    draft_state: dict = {"enabled": False, "placeholder_msg": None}
+    chat_id = update.effective_chat.id
+    bot = update.get_bot()
 
     async def initial_send(_text: str):
-        msg = await update.message.reply_text(f"{intent_label} | {model} | 生成中...")
-        status_msg_holder['msg'] = msg
-
-    async def update_msg(text: str) -> bool:
-        msg = status_msg_holder.get('msg')
-        if not msg:
-            return False
-        bot = update.get_bot()
-        # Try official sendMessageDraft first (Bot API 9.5, native streaming animation)
+        # Use the richer label (intent + model) for the cold-start placeholder; ignore the
+        # generic text from stream_to_telegram so the user sees more context up front.
+        placeholder_text = f"{intent_label} | {model} | 生成中..."
         try:
-            await bot.send_message_draft(
-                chat_id=update.effective_chat.id,
-                text=text,
-            )
-            return True
-        except (AttributeError, TypeError):
-            pass  # library/server doesn't support, fall back
+            await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=placeholder_text)
+            draft_state["enabled"] = True
+            return
         except Exception as e:
-            logger.debug(f"send_message_draft failed: {e}")
-        # Fallback: edit_text
+            logger.debug(f"send_message_draft initial failed, falling back to placeholder: {e}")
+        try:
+            msg = await update.message.reply_text(placeholder_text)
+            draft_state["placeholder_msg"] = msg
+        except Exception as e:
+            logger.warning(f"placeholder send failed: {e}")
+
+    async def update_msg(text: str, is_final: bool = False) -> bool:
+        if is_final:
+            # Commit the terminal message. In draft mode: send a real reply (draft auto-dismisses).
+            # In placeholder mode: edit the placeholder so output appears in-place.
+            if draft_state["enabled"]:
+                try:
+                    await update.message.reply_text(text)
+                    return True
+                except Exception as e:
+                    logger.warning(f"final reply_text failed: {e}")
+                    return False
+            msg = draft_state.get("placeholder_msg")
+            if msg is not None:
+                try:
+                    await msg.edit_text(text)
+                    return True
+                except Exception as e:
+                    logger.debug(f"final edit_text failed, sending fresh reply: {e}")
+            try:
+                await update.message.reply_text(text)
+                return True
+            except Exception as e:
+                logger.warning(f"final fallback reply failed: {e}")
+                return False
+
+        # Mid-stream frame.
+        if draft_state["enabled"]:
+            try:
+                await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=text)
+                return True
+            except Exception as e:
+                # Disable draft path for the rest of this stream and fall through to placeholder edit.
+                logger.debug(f"draft update failed (disabling for this stream): {e}")
+                draft_state["enabled"] = False
+        msg = draft_state.get("placeholder_msg")
+        if msg is None:
+            try:
+                msg = await update.message.reply_text(text)
+                draft_state["placeholder_msg"] = msg
+                return True
+            except Exception as e:
+                logger.warning(f"fallback placeholder create failed: {e}")
+                return False
         try:
             await msg.edit_text(text)
             return True
         except Exception as e:
+            # 'message is not modified' is benign during streaming
             logger.debug(f"edit_text failed: {e}")
             return False
 
     async def long_split(full_text: str):
-        msg = status_msg_holder.get('msg')
-        if msg:
-            try:
-                await msg.delete()
-            except Exception:
-                pass
+        # In placeholder mode, remove the now-stale placeholder before sending the chunks.
+        # In draft mode, the draft auto-dismisses once a real message arrives.
+        if not draft_state["enabled"]:
+            msg = draft_state.get("placeholder_msg")
+            if msg is not None:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
         for i in range(0, len(full_text), TG_MAX_MESSAGE_CHARS):
             await update.message.reply_text(full_text[i:i + TG_MAX_MESSAGE_CHARS])
 
-    # Run streaming pipeline
-    try:
-        text_stream = claude_stream(cmd, full_prompt, cwd=work_dir)
-        result = await stream_to_telegram(
-            initial_send=initial_send,
-            update_message=update_msg,
-            text_stream=text_stream,
-            long_message_split=long_split,
-        )
-    except Exception as e:
-        result = f"⚠️ Claude 執行失敗：{str(e)[:400]}"
-        msg = status_msg_holder.get('msg')
-        if msg:
-            try:
-                await msg.edit_text(result)
-            except Exception:
-                await update.message.reply_text(result)
-        else:
-            await update.message.reply_text(result)
+    # Keep typing indicator alive while Claude generates (covers cold-start gap before first token).
+    async def keep_typing():
+        try:
+            while True:
+                await update.message.chat.send_action("typing")
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
 
-    # Only mark session as "has talked to Claude" if it actually succeeded
-    if not result.startswith("⚠️") and result != "（無回應）":
+    typing_task = asyncio.create_task(keep_typing())
+    stream_ok = False
+    try:
+        try:
+            text_stream = claude_stream(cmd, full_prompt, cwd=work_dir)
+            result, stream_ok = await stream_to_telegram(
+                initial_send=initial_send,
+                update_message=update_msg,
+                text_stream=text_stream,
+                long_message_split=long_split,
+            )
+        except Exception as e:
+            result = f"⚠️ Claude 執行失敗：{str(e)[:400]}"
+            stream_ok = False
+            # Surface the error to the user via whichever channel is alive.
+            if draft_state.get("placeholder_msg") is not None:
+                try:
+                    await draft_state["placeholder_msg"].edit_text(result)
+                except Exception:
+                    await update.message.reply_text(result)
+            else:
+                await update.message.reply_text(result)
+    finally:
+        typing_task.cancel()
+
+    # Only persist to session history when the stream actually completed.
+    if stream_ok:
         session.touch()
         session.qa_log.append((prompt, result))
 

@@ -3,16 +3,21 @@
 Flow:
 1. Spawn `claude -p --output-format stream-json --include-partial-messages`
 2. Parse JSON lines, extract content_block_delta text increments
-3. Accumulate text, periodically push to TG via send_message_draft (native streaming UX)
-4. Finalize with edit_message_text on completion
-5. On long output (>4000 chars), split across multiple messages
+3. Accumulate text; first chunk fires update immediately, then throttled mid-stream updates
+4. Finalize with is_final=True so caller can commit the draft as a real message
+5. On long output (>TG_MAX_MESSAGE_CHARS), delegate to long_message_split callback
 
 Rate limiting:
-- TG bot drafts have rate limits. Throttle to max 1 update per second OR every 50 new chars.
-- Final edit always sent regardless of throttle.
+- Throttle mid-stream updates to max 1 per UPDATE_INTERVAL_SEC OR every UPDATE_DELTA_CHARS new chars.
+- First chunk always fires immediately so short replies don't appear stalled.
+- Final delivery always sent (is_final=True).
 
-Fallback:
-- If send_message_draft is unavailable (older library or API quirk), fall back to edit_message_text.
+Caller contract:
+- update_message(text, is_final=False) -> bool
+  - is_final=False: mid-stream draft animation (e.g. send_message_draft with same draft_id)
+  - is_final=True:  commit terminal message (send a real message; draft auto-dismisses)
+- stream_to_telegram returns (accumulated_text, ok). ok=False means the stream was
+  interrupted or empty — caller should NOT persist this to qa_log/session history.
 """
 
 from __future__ import annotations
@@ -25,7 +30,6 @@ from typing import AsyncGenerator, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-# Tuning constants
 UPDATE_INTERVAL_SEC = 1.0
 UPDATE_DELTA_CHARS = 50
 TG_MAX_MESSAGE_CHARS = 4000
@@ -57,7 +61,6 @@ async def claude_stream(
         cwd=cwd,
     )
 
-    # Send prompt and close stdin
     assert proc.stdin is not None
     proc.stdin.write(prompt.encode())
     await proc.stdin.drain()
@@ -71,10 +74,8 @@ async def claude_stream(
         try:
             event = json.loads(line.decode())
         except json.JSONDecodeError:
-            # Skip malformed lines (sometimes claude emits non-JSON debug)
             continue
 
-        # Extract incremental text from content_block_delta events
         if event.get("type") == "stream_event":
             ev = event.get("event", {})
             if ev.get("type") == "content_block_delta":
@@ -93,35 +94,50 @@ async def claude_stream(
 
 async def stream_to_telegram(
     initial_send: Callable[[str], Awaitable],
-    update_message: Callable[[str], Awaitable[bool]],
+    update_message: Callable[..., Awaitable[bool]],
     text_stream: AsyncGenerator[str, None],
     long_message_split: Callable[[str], Awaitable] | None = None,
-) -> str:
+) -> tuple[str, bool]:
     """Consume text stream and push updates to Telegram with rate limiting.
 
     Args:
-        initial_send: Async callable that sends placeholder message and returns the message object.
-            Signature: `async def(text: str) -> Message`
-        update_message: Async callable that updates an existing message.
-            Signature: `async def(text: str) -> bool` — returns True if updated, False if skipped/failed.
+        initial_send: Async callable that creates the initial placeholder/draft.
+            Signature: `async def(text: str) -> Any`. Called once at the start with "生成中...".
+        update_message: Async callable that updates or finalizes the message.
+            Signature: `async def(text: str, is_final: bool = False) -> bool`.
+            is_final=False → mid-stream draft frame; is_final=True → commit final message.
+            Returns True if the call succeeded, False otherwise.
         text_stream: Async generator yielding text deltas.
-        long_message_split: Optional callable for handling very long outputs (>TG_MAX_MESSAGE_CHARS).
-            Signature: `async def(full_text: str) -> None`. If None, just truncates.
+        long_message_split: Optional callable for outputs > TG_MAX_MESSAGE_CHARS.
+            Signature: `async def(full_text: str) -> None`. If None, the first
+            TG_MAX_MESSAGE_CHARS are delivered via update_message(is_final=True).
 
     Returns:
-        The accumulated final text.
+        (accumulated_text, ok). ok=False if the stream was interrupted or empty —
+        caller should not persist this output to durable history.
     """
-    # Send initial placeholder message
     await initial_send("生成中...")
 
     accumulated = ""
     last_sent_len = 0
     last_update_time = time.time()
+    first_chunk_seen = False
+    interrupted = False
 
     try:
         async for chunk in text_stream:
             accumulated += chunk
             now = time.time()
+
+            if not first_chunk_seen:
+                # Force first update so short replies render immediately.
+                first_chunk_seen = True
+                display = accumulated if len(accumulated) <= TG_MAX_MESSAGE_CHARS else accumulated[:TG_MAX_MESSAGE_CHARS] + "\n…"
+                ok = await update_message(display, is_final=False)
+                if ok:
+                    last_update_time = now
+                    last_sent_len = len(accumulated)
+                continue
 
             time_elapsed = now - last_update_time
             chars_since_last = len(accumulated) - last_sent_len
@@ -132,30 +148,28 @@ async def stream_to_telegram(
             )
 
             if should_update:
-                # Truncate if exceeds TG single-message limit (final split happens after stream ends)
                 display = accumulated if len(accumulated) <= TG_MAX_MESSAGE_CHARS else accumulated[:TG_MAX_MESSAGE_CHARS] + "\n…"
-                ok = await update_message(display)
+                ok = await update_message(display, is_final=False)
                 if ok:
                     last_update_time = now
                     last_sent_len = len(accumulated)
     except Exception as e:
-        # Stream error mid-flight — append marker
         logger.warning(f"Stream interrupted: {e}")
         accumulated += f"\n\n⚠️ 生成中斷：{str(e)[:200]}"
+        interrupted = True
 
-    # Empty output guard
-    if not accumulated.strip():
+    empty = not accumulated.strip()
+    if empty:
         accumulated = "（無回應）"
 
-    # Final delivery
+    # Final delivery — always with is_final=True so caller can commit the draft.
     if len(accumulated) <= TG_MAX_MESSAGE_CHARS:
-        await update_message(accumulated)
+        await update_message(accumulated, is_final=True)
     else:
-        # Long output: split across multiple messages
         if long_message_split is not None:
             await long_message_split(accumulated)
         else:
-            # Just take the first chunk
-            await update_message(accumulated[:TG_MAX_MESSAGE_CHARS])
+            await update_message(accumulated[:TG_MAX_MESSAGE_CHARS], is_final=True)
 
-    return accumulated
+    ok = not interrupted and not empty
+    return accumulated, ok
