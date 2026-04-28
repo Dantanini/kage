@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -1593,7 +1594,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Use session's current model (preserves /opus switch)
         model = session.model
 
-    # Progress feedback — send status then keep typing indicator
+    # Progress feedback label (used in placeholder + during streaming)
     INTENT_LABEL = {
         "course": "📚 課程模式",
         "architecture": "🏗️ 架構思考",
@@ -1601,11 +1602,118 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "note": "📝 筆記模式",
         "chat": "💬 對話",
     }
-    status_msg = await update.message.reply_text(
-        f"{INTENT_LABEL.get(intent, '💬')} | {model} | 思考中..."
-    )
+    intent_label = INTENT_LABEL.get(intent, '💬')
 
-    # Keep sending typing action while Claude thinks
+    # Build claude command with stream-json flags (mirrors _run_claude_once setup)
+    from streaming import claude_stream, stream_to_telegram, TG_MAX_MESSAGE_CHARS
+    claude_bin = _find_claude()
+    work_dir = session.repo_path
+    cmd = [claude_bin, "-p", "--model", model,
+           "--output-format", "stream-json",
+           "--include-partial-messages",
+           "--verbose"]
+    if resume:
+        cmd.extend(["--resume", session.session_id])
+    else:
+        cmd.extend(["--session-id", session.session_id])
+
+    # Inject memory + plan context (same logic as _run_claude_once for first turn)
+    if not resume:
+        recovery_notice = memory_store.check_recovery_needed(REPO_DIR / ".needs_recovery")
+        memory_prefix = memory_store.build_context_prefix()
+        plan_prefix = plan_store.build_context_injection() if intent == "chat" else ""
+        full_prompt = f"[系統] 今天是 {date.today().isoformat()}。工作目錄：{work_dir}\n{recovery_notice}{memory_prefix}{plan_prefix}\n{prompt}"
+    else:
+        full_prompt = prompt
+
+    # Streaming callbacks — sendMessageDraft (animated) with placeholder + edit_text fallback.
+    # draft_id must be non-zero, unique per stream so TG can animate transitions on the same draft.
+    draft_id = secrets.randbits(31) or 1
+    draft_state: dict = {"enabled": False, "placeholder_msg": None}
+    chat_id = update.effective_chat.id
+    bot = update.get_bot()
+
+    async def initial_send(_text: str):
+        # Use the richer label (intent + model) for the cold-start placeholder; ignore the
+        # generic text from stream_to_telegram so the user sees more context up front.
+        placeholder_text = f"{intent_label} | {model} | 生成中..."
+        try:
+            await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=placeholder_text)
+            draft_state["enabled"] = True
+            return
+        except Exception as e:
+            logger.debug(f"send_message_draft initial failed, falling back to placeholder: {e}")
+        try:
+            msg = await update.message.reply_text(placeholder_text)
+            draft_state["placeholder_msg"] = msg
+        except Exception as e:
+            logger.warning(f"placeholder send failed: {e}")
+
+    async def update_msg(text: str, is_final: bool = False) -> bool:
+        if is_final:
+            # Commit the terminal message. In draft mode: send a real reply (draft auto-dismisses).
+            # In placeholder mode: edit the placeholder so output appears in-place.
+            if draft_state["enabled"]:
+                try:
+                    await update.message.reply_text(text)
+                    return True
+                except Exception as e:
+                    logger.warning(f"final reply_text failed: {e}")
+                    return False
+            msg = draft_state.get("placeholder_msg")
+            if msg is not None:
+                try:
+                    await msg.edit_text(text)
+                    return True
+                except Exception as e:
+                    logger.debug(f"final edit_text failed, sending fresh reply: {e}")
+            try:
+                await update.message.reply_text(text)
+                return True
+            except Exception as e:
+                logger.warning(f"final fallback reply failed: {e}")
+                return False
+
+        # Mid-stream frame.
+        if draft_state["enabled"]:
+            try:
+                await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=text)
+                return True
+            except Exception as e:
+                # Disable draft path for the rest of this stream and fall through to placeholder edit.
+                logger.debug(f"draft update failed (disabling for this stream): {e}")
+                draft_state["enabled"] = False
+        msg = draft_state.get("placeholder_msg")
+        if msg is None:
+            try:
+                msg = await update.message.reply_text(text)
+                draft_state["placeholder_msg"] = msg
+                return True
+            except Exception as e:
+                logger.warning(f"fallback placeholder create failed: {e}")
+                return False
+        try:
+            await msg.edit_text(text)
+            return True
+        except Exception as e:
+            # 'message is not modified' is benign during streaming
+            logger.debug(f"edit_text failed: {e}")
+            return False
+
+    async def long_split(full_text: str):
+        # In placeholder mode, remove the now-stale placeholder before sending the chunks.
+        # In draft mode, the draft auto-dismisses once a real message arrives.
+        if not draft_state["enabled"]:
+            msg = draft_state.get("placeholder_msg")
+            if msg is not None:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+        for i in range(0, len(full_text), TG_MAX_MESSAGE_CHARS):
+            await update.message.reply_text(full_text[i:i + TG_MAX_MESSAGE_CHARS])
+
+    # Keep typing indicator alive while Claude generates (covers cold-start gap before first token).
     async def keep_typing():
         try:
             while True:
@@ -1615,19 +1723,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     typing_task = asyncio.create_task(keep_typing())
-
-    result = await _run_claude(prompt, model, session.session_id, resume=resume, cwd=session.repo_path, inject_plan=(intent == "chat"))
-
-    typing_task.cancel()
-
-    # Delete status message, send actual response
+    stream_ok = False
     try:
-        await status_msg.delete()
-    except Exception:
-        pass
+        try:
+            text_stream = claude_stream(cmd, full_prompt, cwd=work_dir)
+            result, stream_ok = await stream_to_telegram(
+                initial_send=initial_send,
+                update_message=update_msg,
+                text_stream=text_stream,
+                long_message_split=long_split,
+            )
+        except Exception as e:
+            result = f"⚠️ Claude 執行失敗：{str(e)[:400]}"
+            stream_ok = False
+            # Surface the error to the user via whichever channel is alive.
+            if draft_state.get("placeholder_msg") is not None:
+                try:
+                    await draft_state["placeholder_msg"].edit_text(result)
+                except Exception:
+                    await update.message.reply_text(result)
+            else:
+                await update.message.reply_text(result)
+    finally:
+        typing_task.cancel()
 
-    # Only mark session as "has talked to Claude" if it actually succeeded
-    if not result.startswith("⚠️"):
+    # Only persist to session history when the stream actually completed.
+    if stream_ok:
         session.touch()
         session.qa_log.append((prompt, result))
 
@@ -1637,13 +1758,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             flush_result = await _flush_qa_log(session)
             if flush_result and not flush_result.startswith("⚠️"):
                 await update.message.reply_text("✅ 學習筆記已自動儲存，繼續對話")
-
-    # Split long messages (Telegram limit: 4096 chars)
-    if len(result) <= 4000:
-        await update.message.reply_text(result)
-    else:
-        for i in range(0, len(result), 4000):
-            await update.message.reply_text(result[i:i + 4000])
 
 
 async def post_init(app: Application):
