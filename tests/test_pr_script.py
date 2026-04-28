@@ -69,3 +69,11 @@ class TestPrScript:
         assert "--title" in content
         # Must use git log to derive title
         assert "git log" in content
+
+    def test_aborts_when_pr_body_fails(self):
+        """pr.sh must hard-exit if pr_body.py returns non-zero (sensitive content)."""
+        content = PR_SCRIPT.read_text(encoding="utf-8")
+        # Must check exit status of pr_body.py and abort, not swallow the error
+        assert "exit 2" in content or "exit 1" in content
+        # Must not have the old "|| echo" fallback that hid errors
+        assert "auto body generation failed" not in content
