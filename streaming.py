@@ -102,7 +102,7 @@ async def stream_to_telegram(
 
     Args:
         initial_send: Async callable that creates the initial placeholder/draft.
-            Signature: `async def(text: str) -> Any`. Called once at the start with "生成中...".
+            Signature: `async def(text: str) -> Any`. Called once at the start with "處理中".
         update_message: Async callable that updates or finalizes the message.
             Signature: `async def(text: str, is_final: bool = False) -> bool`.
             is_final=False → mid-stream draft frame; is_final=True → commit final message.
@@ -116,7 +116,7 @@ async def stream_to_telegram(
         (accumulated_text, ok). ok=False if the stream was interrupted or empty —
         caller should not persist this output to durable history.
     """
-    await initial_send("生成中...")
+    await initial_send("處理中")
 
     accumulated = ""
     last_sent_len = 0

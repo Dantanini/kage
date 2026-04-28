@@ -1636,7 +1636,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def initial_send(_text: str):
         # Use the richer label (intent + model) for the cold-start placeholder; ignore the
         # generic text from stream_to_telegram so the user sees more context up front.
-        placeholder_text = f"{intent_label} | {model} | 生成中..."
+        placeholder_text = f"{intent_label} | {model} | 處理中"
         try:
             await bot.send_message_draft(chat_id=chat_id, draft_id=draft_id, text=placeholder_text)
             draft_state["enabled"] = True
