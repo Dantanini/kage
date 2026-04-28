@@ -48,25 +48,17 @@ class TestPrScript:
         assert result.returncode == 0
         assert "--base develop" in result.stdout
 
-    def test_noninteractive_adds_fill(self):
-        """When stdin is not a TTY (non-interactive), --fill should be added."""
+    def test_auto_body_when_none_provided(self):
+        """Script must call pr_body.py to generate a body when caller didn't pass --body."""
         content = PR_SCRIPT.read_text(encoding="utf-8")
-        assert "! -t 0" in content or "--fill" in content, \
-            "pr.sh must detect non-interactive mode and add --fill"
+        assert "pr_body.py" in content, \
+            "pr.sh must invoke pr_body.py to generate PR description"
+        assert "--body" in content
 
-    def test_noninteractive_detection_logic(self):
-        """Script should check if stdin is a TTY and add --fill accordingly."""
+    def test_skips_auto_body_when_user_passes_body(self):
+        """Script must detect --body / --body-file / --fill and skip auto generation."""
         content = PR_SCRIPT.read_text(encoding="utf-8")
-        # TTY check must exist and be before the exec line
-        assert "! -t 0" in content
-        # The non-interactive block should add --fill to GH_ARGS
-        lines = content.split("\n")
-        found_tty_check = False
-        found_fill_after = False
-        for line in lines:
-            if "! -t 0" in line:
-                found_tty_check = True
-            if found_tty_check and "--fill" in line and "GH_ARGS" in line:
-                found_fill_after = True
-                break
-        assert found_fill_after, "Must add --fill to GH_ARGS after TTY check"
+        # All three opt-out flags must be checked
+        assert "--body" in content
+        assert "--body-file" in content
+        assert "--fill" in content

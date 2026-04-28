@@ -48,9 +48,22 @@ for p in $PROTECTED; do
     fi
 done
 
-# Auto-add --fill in non-interactive mode (e.g. called from bot subprocess)
-if [ ! -t 0 ]; then
-    GH_ARGS+=("--fill")
+# Auto-generate a PR body unless the caller already supplied one
+HAS_BODY=false
+for arg in "${GH_ARGS[@]}"; do
+    case "$arg" in
+        --body|-b|--body-file|-F|--fill)
+            HAS_BODY=true
+            break
+            ;;
+    esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ "$HAS_BODY" = false ]; then
+    BODY=$(python3 "$SCRIPT_DIR/pr_body.py" 2>/dev/null || echo "(auto body generation failed)")
+    GH_ARGS+=("--body" "$BODY")
 fi
 
 if [ "$DRY_RUN" = true ]; then
