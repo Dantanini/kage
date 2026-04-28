@@ -62,3 +62,10 @@ class TestPrScript:
         assert "--body" in content
         assert "--body-file" in content
         assert "--fill" in content
+
+    def test_auto_title_from_first_commit(self):
+        """Script must auto-derive --title from the first commit on the branch."""
+        content = PR_SCRIPT.read_text(encoding="utf-8")
+        assert "--title" in content
+        # Must use git log to derive title
+        assert "git log" in content
