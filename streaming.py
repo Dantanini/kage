@@ -34,6 +34,13 @@ UPDATE_INTERVAL_SEC = 1.0
 UPDATE_DELTA_CHARS = 50
 TG_MAX_MESSAGE_CHARS = 4000
 
+# asyncio.StreamReader default is 64KB. claude --include-partial-messages
+# can emit single JSON lines larger than that (long markdown/code blocks,
+# tool results), causing readline() to raise
+# `ValueError: Separator is found, but chunk is longer than limit`.
+# 10MB is comfortable headroom; only allocates the size of the actual line.
+STREAM_READER_LIMIT = 10 * 1024 * 1024
+
 
 async def claude_stream(
     cmd: list[str],
@@ -59,6 +66,7 @@ async def claude_stream(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        limit=STREAM_READER_LIMIT,
     )
 
     assert proc.stdin is not None
