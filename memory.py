@@ -14,10 +14,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MEMORY_FILENAME = "kage-memory.md"
 DEFAULT_MEMORY_DIRNAME = "kage-memory"
-MEMORY_INJECT_LIMIT = 2000  # chars to inject into prompt
+MEMORY_INJECT_LIMIT = 10000  # chars to inject into prompt
 
-# Structured memory files in priority order for reading
-STRUCTURED_FILES = ["active-tasks.md", "lessons-learned.md", "session-log.md"]
+# Read order matters: read() truncates by keeping the TAIL, so the file most
+# critical for "current state" must come LAST to survive truncation.
+# active-tasks.md = current PRs + open decisions = most critical → goes last.
+STRUCTURED_FILES = ["session-log.md", "lessons-learned.md", "active-tasks.md"]
 
 
 def _strip_frontmatter(text: str) -> str:
