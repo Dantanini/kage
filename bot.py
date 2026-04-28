@@ -494,15 +494,21 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
 
+    async def _reply(text: str) -> None:
+        try:
+            await update.message.reply_text(text)
+        except Exception as e:
+            logger.warning(f"reply_text failed during restart: {e}")
+
     # Save all active sessions before restart
     user_id = update.effective_user.id
     session = sessions.get(user_id)
     if session and session.qa_log:
-        await update.message.reply_text("💾 先儲存記憶再重啟...")
+        await _reply("💾 先儲存記憶再重啟...")
         await sessions.close(user_id)
 
     # Pull both repos before restart
-    await update.message.reply_text("📥 正在拉取最新程式碼...")
+    await _reply("📥 正在拉取最新程式碼...")
     git_errors = []
 
     # Ensure kage is on main before pulling
@@ -527,14 +533,20 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if git_errors:
         error_msg = "⚠️ Git 操作失敗（重啟仍會繼續）：\n" + "\n".join(git_errors) + "\n\n重啟後請檢查並處理。"
-        await update.message.reply_text(error_msg)
+        await _reply(error_msg)
 
-    await update.message.reply_text("🔄 3 秒後重啟...")
+    await _reply("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
     # Write notify file so post_init can confirm restart to user
-    (REPO_DIR / ".restart_notify").write_text(str(update.effective_chat.id))
+    try:
+        (REPO_DIR / ".restart_notify").write_text(str(update.effective_chat.id))
+    except Exception as e:
+        logger.warning(f"failed to write .restart_notify: {e}")
     # Clean exit — remove recovery marker
-    (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
+    try:
+        (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"failed to remove .needs_recovery: {e}")
     os._exit(0)
 
 

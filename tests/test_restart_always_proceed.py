@@ -1,12 +1,14 @@
 """Tests: restart always proceeds even on git errors, but reports them first.
 
-Core invariant: os._exit(0) is ALWAYS called, regardless of git errors.
-Error messages must reach the user BEFORE restart.
+Core invariant: os._exit(0) is ALWAYS called, regardless of git errors
+or Telegram API failures (e.g., reply_text timeout).
+Error messages must reach the user BEFORE restart when possible.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import TimedOut
 
 
 def _make_update(user_id: int = 123, chat_id: int = 456):
@@ -238,3 +240,99 @@ class TestRestartReportsErrors:
         assert error_idx is not None, f"Error message not found. Order: {call_order}"
         assert exit_idx is not None, f"os._exit not called. Order: {call_order}"
         assert error_idx < exit_idx, f"Error sent AFTER exit! Order: {call_order}"
+
+
+class TestRestartSurvivesTelegramTimeout:
+    """reply_text() exceptions (e.g., Telegram TimedOut) must NOT block restart."""
+
+    @patch("bot.ADMIN_ID", 123)
+    @patch("bot.os._exit")
+    @patch("bot.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_first_reply_timeout_restart_proceeds(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
+        """If the very first reply_text times out, restart must still proceed."""
+        from bot import cmd_restart
+
+        mock_subprocess.return_value = _make_subprocess_mock(returncode=0)
+        mock_pull.return_value = None
+
+        update = _make_update()
+        update.message.reply_text = AsyncMock(side_effect=TimedOut("Timed out"))
+
+        await cmd_restart(update, AsyncMock())
+
+        mock_exit.assert_called_once_with(0)
+
+    @patch("bot.ADMIN_ID", 123)
+    @patch("bot.os._exit")
+    @patch("bot.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_all_replies_timeout_restart_still_proceeds(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
+        """If every reply_text times out, restart must STILL proceed."""
+        from bot import cmd_restart
+
+        mock_subprocess.return_value = _make_subprocess_mock(
+            returncode=1, stderr=b"checkout failed"
+        )
+        mock_pull.return_value = "pull failed"
+
+        update = _make_update()
+        update.message.reply_text = AsyncMock(side_effect=TimedOut("Timed out"))
+
+        await cmd_restart(update, AsyncMock())
+
+        mock_exit.assert_called_once_with(0)
+
+    @patch("bot.ADMIN_ID", 123)
+    @patch("bot.os._exit")
+    @patch("bot.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_intermittent_reply_timeout_restart_proceeds(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
+        """If only some reply_text calls time out, restart still proceeds."""
+        from bot import cmd_restart
+
+        mock_subprocess.return_value = _make_subprocess_mock(returncode=0)
+        mock_pull.return_value = None
+
+        update = _make_update()
+        # Second reply_text call fails, others succeed
+        responses = [None, TimedOut("Timed out"), None, None]
+        update.message.reply_text = AsyncMock(side_effect=responses)
+
+        await cmd_restart(update, AsyncMock())
+
+        mock_exit.assert_called_once_with(0)
+
+    @patch("bot.ADMIN_ID", 123)
+    @patch("bot.os._exit")
+    @patch("bot.asyncio.sleep", new_callable=AsyncMock)
+    @patch("bot._git_pull", new_callable=AsyncMock)
+    @patch("bot.asyncio.create_subprocess_exec", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_generic_exception_in_reply_restart_proceeds(
+        self, mock_subprocess, mock_pull, mock_sleep, mock_exit
+    ):
+        """Any unexpected exception in reply_text must not block restart."""
+        from bot import cmd_restart
+
+        mock_subprocess.return_value = _make_subprocess_mock(returncode=0)
+        mock_pull.return_value = None
+
+        update = _make_update()
+        update.message.reply_text = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await cmd_restart(update, AsyncMock())
+
+        mock_exit.assert_called_once_with(0)
