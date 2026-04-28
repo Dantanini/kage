@@ -84,6 +84,7 @@ python3 bot.py
 | `/plan + <text>` | Append to existing plan |
 | `/plan` | View current plan |
 | `/done` | End session, trigger save flow |
+| `/clone` | Clone current session to new chat |
 | `/release` | Release PR preview (develop→main) with inline confirm button |
 | `/restart` | Pull latest code (kage + journal), save memory, restart bot |
 
@@ -119,7 +120,7 @@ kage/
 ├── scripts/
 │   ├── restart.sh      ← Safe bot restart (kills rogue processes)
 │   └── notify.py       ← Cron notification with inline buttons
-├── tests/              ← pytest test suite (370 tests)
+├── tests/              ← pytest test suite (470 tests)
 ├── .github/workflows/  ← GitHub Actions CI
 ├── .claude/
 │   └── CLAUDE.md       ← Operational rules for developers
