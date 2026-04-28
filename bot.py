@@ -170,8 +170,81 @@ def _make_memory_save_hook():
     return hook
 
 
+async def _commit_journal_session_changes(
+    journal_path: str, message: str
+) -> tuple[bool, str]:
+    """Run dev-journal/scripts/commit.py to add+commit+push working tree changes.
+
+    Refuses if dev-journal is not on main, to avoid polluting feature branches
+    with auto-commits. Returns (True, info) on success or "no changes";
+    returns (False, reason) on any failure.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "branch", "--show-current",
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return False, f"git branch failed: {stderr.decode().strip() or stdout.decode().strip()}"
+        branch = stdout.decode().strip()
+        if branch != "main":
+            return False, f"dev-journal not on main (current: {branch}); skip auto-commit"
+
+        script = Path(journal_path) / "scripts" / "commit.py"
+        proc = await asyncio.create_subprocess_exec(
+            "python3", str(script), message,
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        out = stdout.decode().strip()
+        err = stderr.decode().strip()
+        if proc.returncode != 0:
+            return False, f"commit.py failed: {err or out}"
+        return True, out
+    except Exception as e:
+        return False, f"commit exception: {e}"
+
+
+def _make_commit_journal_hook():
+    """Factory: end hook that auto-commits dev-journal changes after a session.
+
+    Runs after the memory-save hook so memory updates are also committed in
+    the same operation.
+    """
+    async def hook(session):
+        from datetime import datetime
+        sid = (getattr(session, "session_id", "") or "session")[:8]
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        message = f"chore(kage): auto-commit session {sid} ({ts})"
+        ok, info = await _commit_journal_session_changes(REPOS["journal"], message)
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
+        if ok:
+            if "沒有變更" in info:
+                logger.info("journal auto-commit: nothing to commit")
+            else:
+                logger.info(f"journal auto-committed: {info[:200]}")
+                send_telegram_message(
+                    "✅ dev-journal 已自動 commit + push",
+                    token=token, chat_id=admin_id,
+                )
+        else:
+            logger.warning(f"journal auto-commit failed: {info}")
+            send_telegram_message(
+                f"⚠️ dev-journal 自動 commit 失敗\n\n{info[:500]}",
+                token=token, chat_id=admin_id,
+            )
+    return hook
+
+
 sessions.register_start_hook(_make_git_pull_hook)
 sessions.register_end_hook(_make_memory_save_hook)
+sessions.register_end_hook(_make_commit_journal_hook)
 
 
 def _get_journal_path() -> str:
