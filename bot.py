@@ -1802,6 +1802,7 @@ async def post_init(app: Application):
         BotCommand("evening", "日結：更新記憶/daily/README + commit"),
         BotCommand("done", "結束對話並儲存筆記"),
         BotCommand("repo", "切工作目錄：journal / kage / home"),
+        BotCommand("clone", "Clone git repo 並註冊：/clone <url> [name]"),
         BotCommand("release", "kage 發版：preview diff → 開 PR"),
         BotCommand("restart", "拉最新 code + 重啟 Bot"),
         BotCommand("status", "查看 Claude 進程狀態"),
