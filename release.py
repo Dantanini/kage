@@ -165,7 +165,26 @@ def create_pr(title: str, body: str, base: str = "main", head: str = "develop"):
     )
 
 
+def sync_develop_with_main():
+    """Sync develop with main after the release PR has been merged.
+
+    Brings main's merge commit (and any direct fixes on main) back into
+    develop so future feature branches start from up-to-date history.
+    Run this after the GitHub PR is merged.
+    """
+    subprocess.run(["git", "fetch", "origin"], check=True)
+    subprocess.run(["git", "checkout", "develop"], check=True)
+    subprocess.run(["git", "pull", "origin", "develop"], check=True)
+    subprocess.run(["git", "merge", "origin/main", "--no-edit"], check=True)
+    subprocess.run(["git", "push", "origin", "develop"], check=True)
+
+
 def main():
+    if "--sync" in sys.argv:
+        sync_develop_with_main()
+        print("✅ develop synced with main")
+        return
+
     dry_run = "--dry-run" in sys.argv
 
     # Fetch latest
@@ -189,6 +208,7 @@ def main():
 
     create_pr(title, body)
     print("\nPR created!")
+    print("\n📝 Merge 完成後請跑：python3 release.py --sync  (把 main 同步回 develop)")
 
 
 if __name__ == "__main__":

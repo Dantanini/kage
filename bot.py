@@ -39,6 +39,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
 )
+# httpx INFO logs the full request URL, which leaks bot token in TG API calls
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Load .env file early (before any env var reads)
@@ -144,11 +146,63 @@ def _make_git_pull_hook():
     return hook
 
 
+async def _check_journal_safe_for_memory_save(journal_path: str) -> tuple[bool, str]:
+    """Verify dev-journal is on main with a clean working tree.
+
+    Returns (True, "") if safe to write memory.
+    Returns (False, reason) if unsafe \u2014 caller should abort and warn the user.
+    Refusing on a feature branch or dirty tree avoids mixing memory updates
+    with in-progress work.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "branch", "--show-current",
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return False, f"git branch failed: {stderr.decode().strip() or stdout.decode().strip()}"
+        branch = stdout.decode().strip()
+        if branch != "main":
+            return False, f"dev-journal not on main (current: {branch})"
+
+        proc = await asyncio.create_subprocess_exec(
+            "git", "status", "--porcelain",
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return False, f"git status failed: {stderr.decode().strip() or stdout.decode().strip()}"
+        porcelain = stdout.decode().strip()
+        if porcelain:
+            return False, f"dev-journal working tree dirty:\n{porcelain[:500]}"
+    except Exception as e:
+        return False, f"git check failed: {e}"
+
+    return True, ""
+
+
 def _make_memory_save_hook():
     """Factory: creates an end hook that saves session memory."""
     async def hook(session):
         if not session.qa_log:
             return
+
+        ok, reason = await _check_journal_safe_for_memory_save(REPOS["journal"])
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
+        if not ok:
+            logger.warning(f"memory save aborted: {reason}")
+            send_telegram_message(
+                f"\u26a0\ufe0f \u8a18\u61b6\u5132\u5b58\u5df2\u8df3\u904e\n\n{reason}\n\n\u8acb\u628a dev-journal \u5207\u56de main \u4e26 commit / stash \u5de5\u4f5c\u4e2d\u7684\u6539\u52d5\uff0c\u4e0b\u6b21 session \u7d50\u675f\u6703\u518d\u8a66\u4e00\u6b21\u3002",
+                token=token, chat_id=admin_id,
+            )
+            return
+
         prompt = memory_store.build_save_prompt(session.qa_log)
         if not prompt:
             return
@@ -156,8 +210,6 @@ def _make_memory_save_hook():
         result = await _run_claude(
             prompt, "sonnet", str(_uuid.uuid4()), resume=False,
         )
-        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
         if result.startswith("\u26a0\ufe0f"):
             logger.warning(f"Memory save failed: {result[:200]}")
             msg = build_memory_save_message(success=False, error=result[:100])
@@ -168,8 +220,81 @@ def _make_memory_save_hook():
     return hook
 
 
+async def _commit_journal_session_changes(
+    journal_path: str, message: str
+) -> tuple[bool, str]:
+    """Run dev-journal/scripts/commit.py to add+commit+push working tree changes.
+
+    Refuses if dev-journal is not on main, to avoid polluting feature branches
+    with auto-commits. Returns (True, info) on success or "no changes";
+    returns (False, reason) on any failure.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "branch", "--show-current",
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return False, f"git branch failed: {stderr.decode().strip() or stdout.decode().strip()}"
+        branch = stdout.decode().strip()
+        if branch != "main":
+            return False, f"dev-journal not on main (current: {branch}); skip auto-commit"
+
+        script = Path(journal_path) / "scripts" / "commit.py"
+        proc = await asyncio.create_subprocess_exec(
+            "python3", str(script), message,
+            cwd=journal_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        out = stdout.decode().strip()
+        err = stderr.decode().strip()
+        if proc.returncode != 0:
+            return False, f"commit.py failed: {err or out}"
+        return True, out
+    except Exception as e:
+        return False, f"commit exception: {e}"
+
+
+def _make_commit_journal_hook():
+    """Factory: end hook that auto-commits dev-journal changes after a session.
+
+    Runs after the memory-save hook so memory updates are also committed in
+    the same operation.
+    """
+    async def hook(session):
+        from datetime import datetime
+        sid = (getattr(session, "session_id", "") or "session")[:8]
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        message = f"chore(kage): auto-commit session {sid} ({ts})"
+        ok, info = await _commit_journal_session_changes(REPOS["journal"], message)
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        admin_id = os.environ.get("TELEGRAM_ADMIN_ID", "")
+        if ok:
+            if "沒有變更" in info:
+                logger.info("journal auto-commit: nothing to commit")
+            else:
+                logger.info(f"journal auto-committed: {info[:200]}")
+                send_telegram_message(
+                    "✅ dev-journal 已自動 commit + push",
+                    token=token, chat_id=admin_id,
+                )
+        else:
+            logger.warning(f"journal auto-commit failed: {info}")
+            send_telegram_message(
+                f"⚠️ dev-journal 自動 commit 失敗\n\n{info[:500]}",
+                token=token, chat_id=admin_id,
+            )
+    return hook
+
+
 sessions.register_start_hook(_make_git_pull_hook)
 sessions.register_end_hook(_make_memory_save_hook)
+sessions.register_end_hook(_make_commit_journal_hook)
 
 
 def _get_journal_path() -> str:
@@ -492,15 +617,21 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _check_auth(update):
         return
 
+    async def _reply(text: str) -> None:
+        try:
+            await update.message.reply_text(text)
+        except Exception as e:
+            logger.warning(f"reply_text failed during restart: {e}")
+
     # Save all active sessions before restart
     user_id = update.effective_user.id
     session = sessions.get(user_id)
     if session and session.qa_log:
-        await update.message.reply_text("💾 先儲存記憶再重啟...")
+        await _reply("💾 先儲存記憶再重啟...")
         await sessions.close(user_id)
 
     # Pull both repos before restart
-    await update.message.reply_text("📥 正在拉取最新程式碼...")
+    await _reply("📥 正在拉取最新程式碼...")
     git_errors = []
 
     # Ensure kage is on main before pulling
@@ -525,14 +656,20 @@ async def cmd_restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if git_errors:
         error_msg = "⚠️ Git 操作失敗（重啟仍會繼續）：\n" + "\n".join(git_errors) + "\n\n重啟後請檢查並處理。"
-        await update.message.reply_text(error_msg)
+        await _reply(error_msg)
 
-    await update.message.reply_text("🔄 3 秒後重啟...")
+    await _reply("🔄 3 秒後重啟...")
     await asyncio.sleep(3)
     # Write notify file so post_init can confirm restart to user
-    (REPO_DIR / ".restart_notify").write_text(str(update.effective_chat.id))
+    try:
+        (REPO_DIR / ".restart_notify").write_text(str(update.effective_chat.id))
+    except Exception as e:
+        logger.warning(f"failed to write .restart_notify: {e}")
     # Clean exit — remove recovery marker
-    (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
+    try:
+        (REPO_DIR / ".needs_recovery").unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"failed to remove .needs_recovery: {e}")
     os._exit(0)
 
 
@@ -1800,6 +1937,7 @@ async def post_init(app: Application):
         BotCommand("evening", "日結：更新記憶/daily/README + commit"),
         BotCommand("done", "結束對話並儲存筆記"),
         BotCommand("repo", "切工作目錄：journal / kage / home"),
+        BotCommand("clone", "Clone git repo 並註冊：/clone <url> [name]"),
         BotCommand("release", "kage 發版：preview diff → 開 PR"),
         BotCommand("restart", "拉最新 code + 重啟 Bot"),
         BotCommand("status", "查看 Claude 進程狀態"),
