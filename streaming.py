@@ -34,6 +34,13 @@ UPDATE_INTERVAL_SEC = 1.0
 UPDATE_DELTA_CHARS = 50
 TG_MAX_MESSAGE_CHARS = 4000
 
+# asyncio.StreamReader default is 64KB. claude --include-partial-messages
+# can emit single JSON lines larger than that (long markdown/code blocks,
+# tool results), causing readline() to raise
+# `ValueError: Separator is found, but chunk is longer than limit`.
+# 10MB is comfortable headroom; only allocates the size of the actual line.
+STREAM_READER_LIMIT = 10 * 1024 * 1024
+
 
 async def claude_stream(
     cmd: list[str],
@@ -59,6 +66,7 @@ async def claude_stream(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        limit=STREAM_READER_LIMIT,
     )
 
     assert proc.stdin is not None
@@ -102,7 +110,7 @@ async def stream_to_telegram(
 
     Args:
         initial_send: Async callable that creates the initial placeholder/draft.
-            Signature: `async def(text: str) -> Any`. Called once at the start with "生成中...".
+            Signature: `async def(text: str) -> Any`. Called once at the start with "處理中".
         update_message: Async callable that updates or finalizes the message.
             Signature: `async def(text: str, is_final: bool = False) -> bool`.
             is_final=False → mid-stream draft frame; is_final=True → commit final message.
@@ -116,7 +124,7 @@ async def stream_to_telegram(
         (accumulated_text, ok). ok=False if the stream was interrupted or empty —
         caller should not persist this output to durable history.
     """
-    await initial_send("生成中...")
+    await initial_send("處理中")
 
     accumulated = ""
     last_sent_len = 0
