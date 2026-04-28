@@ -160,11 +160,14 @@ class TestTaskAskReply:
         assert has_buttons, "Answer should include inline buttons"
 
     @patch("bot.ADMIN_ID", 123)
+    @patch("bot._find_claude", return_value="/fake/claude")
+    @patch("streaming.stream_to_telegram", new_callable=AsyncMock)
     @patch("bot._run_claude", new_callable=AsyncMock)
     @pytest.mark.asyncio
-    async def test_non_reply_message_not_intercepted(self, mock_claude):
+    async def test_non_reply_message_not_intercepted(self, mock_claude, mock_stream, mock_find):
         """Regular messages (not replying to task_ask) should not trigger Q&A."""
         mock_claude.return_value = "normal response"
+        mock_stream.return_value = ("normal response", True)
 
         update = _make_message("隨便說的話")
         ctx = AsyncMock()
