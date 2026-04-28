@@ -66,7 +66,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Auto-generate a PR body unless the caller already supplied one
 if [ "$HAS_BODY" = false ]; then
-    BODY=$(python3 "$SCRIPT_DIR/pr_body.py" 2>/dev/null || echo "(auto body generation failed)")
+    # pr_body.py exits non-zero (and writes to stderr) if the auto-generated
+    # body would leak sensitive info — refuse to open the PR in that case.
+    if ! BODY=$(python3 "$SCRIPT_DIR/pr_body.py"); then
+        echo "❌ 拒絕開 PR：自動生成的 body 含機敏資訊（見上方 stderr）。" >&2
+        echo "   修法：改 commit message 或手動傳 --body \"...\"。" >&2
+        exit 2
+    fi
     GH_ARGS+=("--body" "$BODY")
 fi
 
